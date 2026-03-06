@@ -41,7 +41,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/inventory/{store}', [InventoryController::class, 'show']);
     Route::post('/inventory/adjustments', [InventoryController::class, 'adjust']);
     Route::get('/inventory/movements/history', [InventoryController::class, 'history']);
-    
+    Route::post('/inventory/check-availability', [InventoryController::class, 'checkAvailability']);
+    Route::post('/inventory/check-single-availability', [InventoryController::class, 'checkSingleProductAvailability']);
     // Reports
     Route::get('/reports', [ReportController::class, 'index']);
     Route::get('/reports/stock-valuation', [ReportController::class, 'stockValuation']);

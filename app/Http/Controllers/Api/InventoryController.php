@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Services\InventoryService;
 use App\Models\Inventory;
+use App\Models\Product;
 use App\Models\InventoryMovement;
 use App\Models\Store;
 use App\Http\Requests\InventoryAdjustmentRequest;
@@ -28,7 +29,7 @@ class InventoryController extends Controller
     public static function middleware(): array
     {
         return [
-            new Middleware('permission:view inventory', only: ['index', 'show']),
+            new Middleware('permission:view inventory', only: ['index', 'show', 'checkAvailability']),
             new Middleware('permission:adjust inventory', only: ['adjust']),
         ];
     }
@@ -111,6 +112,147 @@ class InventoryController extends Controller
             'inventory' => $inventory
         ]);
     }
+
+
+    /**
+     * Check stock availability for multiple products in a store
+     * Used by transfer creation to validate stock before transfer
+     */
+    public function checkAvailability(Request $request)
+    {
+        $request->validate([
+            'store_id' => 'required|exists:stores,id',
+            'items' => 'required|array|min:1',
+            'items.*.product_id' => 'required|exists:products,id',
+            'items.*.quantity' => 'required|integer|min:1',
+        ]);
+
+        $user = auth()->user();
+
+        // Check if user has access to this store
+        if (!$user->canAccessStore($request->store_id)) {
+            return response()->json([
+                'message' => 'Unauthorized to check inventory at this store'
+            ], 403);
+        }
+
+        $results = [];
+        $insufficientItems = [];
+        $totalValue = 0;
+
+        foreach ($request->items as $item) {
+            $inventory = Inventory::where('store_id', $request->store_id)
+                ->where('product_id', $item['product_id'])
+                ->first();
+
+            $product = Product::find($item['product_id']);
+            
+            $available = $inventory ? $inventory->available_quantity : 0;
+            $requestedQty = $item['quantity'];
+            
+            // Determine status
+            if ($available < $requestedQty) {
+                $status = 'insufficient';
+                $insufficientItems[] = [
+                    'product_id' => $item['product_id'],
+                    'product_name' => $product->name,
+                    'sku' => $product->sku,
+                    'requested' => $requestedQty,
+                    'available' => $available,
+                    'shortage' => $requestedQty - $available
+                ];
+            } elseif ($available <= ($inventory->reorder_point ?? 5)) {
+                $status = 'low';
+            } else {
+                $status = 'ok';
+            }
+
+            $totalValue += $available * ($product->selling_price ?? 0);
+
+            $results[$item['product_id']] = [
+                'product_id' => $item['product_id'],
+                'product_name' => $product->name,
+                'sku' => $product->sku,
+                'requested_quantity' => $requestedQty,
+                'available_quantity' => $available,
+                'reserved_quantity' => $inventory ? $inventory->reserved_quantity : 0,
+                'on_hand_quantity' => $inventory ? $inventory->quantity : 0,
+                'reorder_point' => $inventory ? $inventory->reorder_point : 0,
+                'status' => $status,
+                'unit_price' => $product->selling_price,
+                'total_value' => $available * ($product->selling_price ?? 0),
+                'can_fulfill' => $available >= $requestedQty,
+            ];
+        }
+
+        // Calculate overall availability
+        $allAvailable = count($insufficientItems) === 0;
+        $partiallyAvailable = count($insufficientItems) > 0 && count($insufficientItems) < count($request->items);
+
+        return response()->json([
+            'success' => true,
+            'data' => $results,
+            'summary' => [
+                'total_items_checked' => count($request->items),
+                'items_with_sufficient_stock' => count($results) - count($insufficientItems),
+                'items_with_insufficient_stock' => count($insufficientItems),
+                'all_available' => $allAvailable,
+                'partially_available' => $partiallyAvailable,
+                'total_inventory_value' => $totalValue,
+                'store_id' => $request->store_id,
+                'checked_at' => now()->toDateTimeString(),
+            ],
+            'insufficient_items' => $insufficientItems,
+        ]);
+    }
+
+    /**
+     * Check availability for a single product (simpler endpoint)
+     */
+    public function checkSingleProductAvailability(Request $request)
+    {
+        $request->validate([
+            'store_id' => 'required|exists:stores,id',
+            'product_id' => 'required|exists:products,id',
+            'quantity' => 'required|integer|min:1',
+        ]);
+
+        $user = auth()->user();
+
+        if (!$user->canAccessStore($request->store_id)) {
+            return response()->json([
+                'message' => 'Unauthorized'
+            ], 403);
+        }
+
+        $inventory = Inventory::where('store_id', $request->store_id)
+            ->where('product_id', $request->product_id)
+            ->first();
+
+        $product = Product::find($request->product_id);
+        $available = $inventory ? $inventory->available_quantity : 0;
+        $requestedQty = $request->quantity;
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'product_id' => $request->product_id,
+                'product_name' => $product->name,
+                'sku' => $product->sku,
+                'requested_quantity' => $requestedQty,
+                'available_quantity' => $available,
+                'reserved_quantity' => $inventory ? $inventory->reserved_quantity : 0,
+                'on_hand_quantity' => $inventory ? $inventory->quantity : 0,
+                'reorder_point' => $inventory ? $inventory->reorder_point : 0,
+                'can_fulfill' => $available >= $requestedQty,
+                'shortage' => $available < $requestedQty ? $requestedQty - $available : 0,
+                'status' => $available >= $requestedQty 
+                    ? ($available <= ($inventory->reorder_point ?? 5) ? 'low' : 'ok') 
+                    : 'insufficient',
+            ]
+        ]);
+    }
+
 
     /**
      * Get inventory movement history

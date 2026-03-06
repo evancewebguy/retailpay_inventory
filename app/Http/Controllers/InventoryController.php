@@ -146,7 +146,7 @@ class InventoryController extends Controller implements HasMiddleware
     {
         $user = auth()->user();
         
-        $stores = Store::select('id', 'name', 'code')
+        $stores = Store::select('id', 'name', 'code', 'branch_id')
             ->when(!$user->hasRole('Administrator'), function ($query) use ($user) {
                 if ($user->hasRole('Branch Manager')) {
                     $query->where('branch_id', $user->branch_id);
@@ -159,6 +159,7 @@ class InventoryController extends Controller implements HasMiddleware
 
         $products = Product::select('id', 'name', 'sku', 'selling_price')
             ->where('is_active', true)
+            ->orderBy("name")
             ->get();
 
         return Inertia::render('Inventory/Adjustment', [

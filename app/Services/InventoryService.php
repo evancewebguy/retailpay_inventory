@@ -207,56 +207,57 @@ class InventoryService
         });
     }
 
+
     /**
-     * Stock adjustment
+     * Adjust stock levels
      */
     public function adjustStock($storeId, $items, $type, $reason, $notes, $userId)
     {
         return DB::transaction(function () use ($storeId, $items, $type, $reason, $notes, $userId) {
-            $adjustment = StockAdjustment::create([
+            $adjustment = \App\Models\StockAdjustment::create([
                 'store_id' => $storeId,
                 'type' => $type,
                 'reason' => $reason,
                 'notes' => $notes,
                 'created_by' => $userId,
-                'status' => 'PENDING'
+                'status' => 'COMPLETED'
             ]);
 
             foreach ($items as $item) {
-                $inventory = Inventory::where('store_id', $storeId)
-                    ->where('product_id', $item['product_id'])
-                    ->lockForUpdate()
-                    ->first();
-
-                if (!$inventory) {
-                    $inventory = Inventory::create([
+                $inventory = Inventory::firstOrCreate(
+                    [
                         'store_id' => $storeId,
-                        'product_id' => $item['product_id'],
-                        'quantity' => 0
-                    ]);
-                }
+                        'product_id' => $item['product_id']
+                    ],
+                    ['quantity' => 0, 'reserved_quantity' => 0]
+                );
 
-                $previousQuantity = $inventory->quantity;
+                $oldQuantity = $inventory->quantity;
                 $newQuantity = $item['new_quantity'];
+                $quantityChange = $newQuantity - $oldQuantity;
 
+                // Create adjustment item
                 $adjustment->items()->create([
                     'product_id' => $item['product_id'],
-                    'previous_quantity' => $previousQuantity,
-                    'adjusted_quantity' => $newQuantity - $previousQuantity,
+                    'previous_quantity' => $oldQuantity,
+                    'adjusted_quantity' => $quantityChange,
                     'new_quantity' => $newQuantity,
                     'reason' => $item['reason'] ?? null
                 ]);
 
+                // Update inventory
                 $inventory->update(['quantity' => $newQuantity]);
 
+                // Create inventory movement record
                 InventoryMovement::create([
                     'movement_type' => 'ADJUSTMENT',
                     'product_id' => $item['product_id'],
                     'from_store_id' => $storeId,
-                    'quantity' => $newQuantity - $previousQuantity,
-                    'previous_quantity' => $previousQuantity,
+                    'quantity' => $quantityChange,
+                    'previous_quantity' => $oldQuantity,
                     'new_quantity' => $newQuantity,
                     'reason' => $reason,
+                    'notes' => $notes . ($item['reason'] ? " - Item reason: {$item['reason']}" : ''),
                     'reference_type' => 'adjustment',
                     'reference_id' => $adjustment->id,
                     'created_by' => $userId
