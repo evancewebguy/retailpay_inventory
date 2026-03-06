@@ -1,33 +1,36 @@
-import type { Auth } from '@/types/auth';
+import { AxiosInstance } from 'axios'
+import { route as ziggyRoute } from 'ziggy-js'
 
-// Extend ImportMeta interface for Vite...
-declare module 'vite/client' {
-    interface ImportMetaEnv {
-        readonly VITE_APP_NAME: string;
-        [key: string]: string | boolean | undefined;
+import { User } from './index'
+
+export {}
+
+declare global {
+    interface Window {
+        axios: AxiosInstance
     }
 
-    interface ImportMeta {
-        readonly env: ImportMetaEnv;
-        readonly glob: <T>(pattern: string) => Record<string, () => Promise<T>>;
-    }
+    var route: typeof ziggyRoute
 }
+
+// Vue component type
+declare module '*.vue' {
+    import type { DefineComponent } from 'vue'
+    const component: DefineComponent<{}, {}, any>
+    export default component
+}
+
 
 declare module '@inertiajs/core' {
-    export interface InertiaConfig {
-        sharedPageProps: {
-            name: string;
-            auth: Auth;
-            sidebarOpen: boolean;
-            [key: string]: unknown;
-        };
-    }
-}
-
-declare module 'vue' {
-    interface ComponentCustomProperties {
-        $inertia: typeof Router;
-        $page: Page;
-        $headManager: ReturnType<typeof createHeadManager>;
+    interface PageProps {
+        auth: {
+            user: User | null
+        }
+        flash: {
+            message?: string
+            error?: string
+            success?: string
+        }
+        ziggy: any
     }
 }

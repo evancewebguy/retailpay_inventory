@@ -1,28 +1,42 @@
-import { createInertiaApp } from '@inertiajs/vue3';
-import { resolvePageComponent } from 'laravel-vite-plugin/inertia-helpers';
-import type { DefineComponent } from 'vue';
-import { createApp, h } from 'vue';
-import '../css/app.css';
-import { initializeTheme } from '@/composables/useAppearance';
 
-const appName = import.meta.env.VITE_APP_NAME || 'Laravel';
+import { createInertiaApp } from '@inertiajs/vue3'
+import { resolvePageComponent } from 'laravel-vite-plugin/inertia-helpers'
+import { createApp, h } from 'vue'
+import type { DefineComponent } from 'vue'
+
+import '../css/app.css'
+import Toast from 'vue-toastification'
+import 'vue-toastification/dist/index.css'
+
+const appName = import.meta.env.VITE_APP_NAME || 'KK Wholesalers'
 
 createInertiaApp({
     title: (title) => (title ? `${title} - ${appName}` : appName),
-    resolve: (name) =>
-        resolvePageComponent(
-            `./pages/${name}.vue`,
-            import.meta.glob<DefineComponent>('./pages/**/*.vue'),
-        ),
+    
+    resolve: (name) => {
+        const pages = import.meta.glob<DefineComponent>('./Pages/**/*.vue')
+        return resolvePageComponent(`./Pages/${name}.vue`, pages)
+    },
+    
     setup({ el, App, props, plugin }) {
-        createApp({ render: () => h(App, props) })
-            .use(plugin)
-            .mount(el);
-    },
-    progress: {
-        color: '#4B5563',
-    },
-});
+        const app = createApp({ render: () => h(App, props) })
+        
+        app.use(plugin)
 
-// This will set light / dark mode on page load...
-initializeTheme();
+        app.use(Toast, {
+            position: 'top-right',
+            timeout: 3000,
+            closeOnClick: true,
+            pauseOnHover: true,
+            draggable: true,
+        })
+
+        
+        app.mount(el)
+    },
+    
+    progress: {
+        color: '#4f46e5',
+        showSpinner: true,
+    },
+})
