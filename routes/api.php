@@ -43,9 +43,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/inventory/movements/history', [InventoryController::class, 'history']);
     
     // Reports
+    Route::get('/reports', [ReportController::class, 'index']);
     Route::get('/reports/stock-valuation', [ReportController::class, 'stockValuation']);
     Route::get('/reports/movement-history', [ReportController::class, 'movementHistory']);
+    Route::get('/reports/sales', [ReportController::class, 'salesReport']);
+    Route::get('/reports/products', [ReportController::class, 'productPerformance']);
     Route::get('/reports/low-stock', [ReportController::class, 'lowStock']);
+    Route::post('/reports/export', [ReportController::class, 'export']);
     
     // Master data
     // Route::apiResource('stores', StoreController::class)->only(['index', 'show']);

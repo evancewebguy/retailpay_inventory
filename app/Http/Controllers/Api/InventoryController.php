@@ -13,7 +13,6 @@ use Illuminate\Routing\Controllers\Middleware;
 use Illuminate\Support\Facades\DB;
 
 
-
 class InventoryController extends Controller
 {
     protected $inventoryService;
