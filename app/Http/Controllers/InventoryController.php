@@ -146,7 +146,8 @@ class InventoryController extends Controller implements HasMiddleware
     {
         $user = auth()->user();
         
-        $stores = Store::select('id', 'name', 'code', 'branch_id')
+        $stores = Store::with('branch')
+            ->select('id', 'name', 'code', 'branch_id')
             ->when(!$user->hasRole('Administrator'), function ($query) use ($user) {
                 if ($user->hasRole('Branch Manager')) {
                     $query->where('branch_id', $user->branch_id);

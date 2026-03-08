@@ -8,7 +8,7 @@ use App\Services\InventoryService;
 use App\Http\Requests\SaleRequest;
 use App\Models\Sale;
 use Illuminate\Routing\Controllers\Middleware;
-
+use App\Exceptions\InsufficientStockException;
 
 
 class SalesController extends Controller
@@ -49,6 +49,7 @@ class SalesController extends Controller
 
     public function store(SaleRequest $request)
     {
+        
         try {
             // Check if user has access to this store
             if (!auth()->user()->canAccessStore($request->store_id)) {
@@ -57,12 +58,15 @@ class SalesController extends Controller
                 ], 403);
             }
 
+
             $sale = $this->inventoryService->processSale(
                 $request->store_id,
                 $request->items,
                 auth()->id(),
-                $request->customer_id
+                $request->customer_id ?? null
             );
+
+            dd(vars: $sale);
 
             return response()->json([
                 'message' => 'Sale completed successfully',
@@ -70,10 +74,20 @@ class SalesController extends Controller
             ], 201);
 
         } catch (\Exception $e) {
-            return response()->json([
+
+            $statusCode = 400;
+
+            $response = [
                 'message' => 'Sale failed',
                 'error' => $e->getMessage()
-            ], 400);
+            ];
+
+            if ($e instanceof InsufficientStockException) {
+                $response['type'] = 'insufficient_stock';
+            }elseif ($e instanceof \PDOException) {
+                $response['error'] = 'A database error occurred';
+                $statusCode = 500;
+            }
         }
     }
 

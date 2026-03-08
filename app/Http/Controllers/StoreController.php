@@ -17,7 +17,7 @@ class StoreController extends Controller implements HasMiddleware
     {
         return [
             new Middleware('auth'),
-            new Middleware('permission:view stores', only: ['index', 'show']),
+            // new Middleware('permission:view stores', only: ['index', 'show']),
         ];
     }
 

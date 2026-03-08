@@ -210,7 +210,7 @@ class InventoryController extends Controller
      * Check availability for a single product (simpler endpoint)
      */
     public function checkSingleProductAvailability(Request $request)
-    {
+    {        
         $request->validate([
             'store_id' => 'required|exists:stores,id',
             'product_id' => 'required|exists:products,id',

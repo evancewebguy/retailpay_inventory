@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { Head, Link, router, useForm } from '@inertiajs/vue3'
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue'
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useToast } from 'vue-toastification'
-import axios from 'axios';
-
+import axios from 'axios'
 import {
     ArrowPathIcon,
     PlusIcon,
@@ -44,24 +43,25 @@ const props = defineProps<{
 
 // Form state using Inertia's useForm
 const form = useForm({
-    store_id: props.selected_store || '',
+    store_id: props.selected_store?.toString() || '',
     type: 'CORRECTION',
     reason: 'COUNT_CORRECTION',
     notes: '',
     items: [
         {
-            product_id: props.selected_product || '',
+            product_id: props.selected_product?.toString() || '',
             new_quantity: 0,
-            reason: ''
+            reason: '',
+            current_quantity: 0
         }
     ],
 })
 
 // Loading states
-const loading = ref(false)
 const checkingCurrentStock = ref(false)
 const productSearch = ref('')
 const showProductDropdown = ref(false)
+const activeDropdownIndex = ref<number | null>(null)
 
 // Current stock values for selected products
 const currentStockValues = ref<Record<number, number>>({})
@@ -118,7 +118,7 @@ const canSubmit = computed(() => {
            form.type && 
            form.reason && 
            form.items.length > 0 && 
-           form.items.every(item => item.product_id && item.new_quantity >= 0) &&
+           form.items.every(item => item.product_id && Number(item.new_quantity) >= 0) &&
            !form.processing
 })
 
@@ -127,17 +127,20 @@ const addItem = () => {
     form.items.push({
         product_id: '',
         new_quantity: 0,
-        reason: ''
+        reason: '',
+        current_quantity: 0
     })
 }
 
 const removeItem = (index: number) => {
     if (form.items.length > 1) {
+        const productId = form.items[index].product_id
         form.items.splice(index, 1)
         // Remove from current stock values
-        const productId = form.items[index]?.product_id
         if (productId) {
-            delete currentStockValues.value[productId]
+            const newValues = { ...currentStockValues.value }
+            delete newValues[Number(productId)]
+            currentStockValues.value = newValues
         }
     }
 }
@@ -152,23 +155,29 @@ const loadCurrentStock = async (productId: number, index: number) => {
     
     checkingCurrentStock.value = true
     try {
-        const response = await axios.get('/api/inventory/check-single-availability', {
-            params: {
-                store_id: form.store_id,
-                product_id: productId,
-                quantity: 1 // Just to check availability
-            }
+        // Use POST instead of GET to avoid route conflicts
+        const response = await axios.post('/api/inventory/check-single-availability', {
+            store_id: Number(form.store_id),
+            product_id: productId,
+            quantity: 1
         })
         
         const data = response.data.data
-        currentStockValues.value[productId] = data.on_hand_quantity || 0
+        const onHandQuantity = data.on_hand_quantity || 0
         
-        // Update the item's current quantity display
-        form.items[index].current_quantity = data.on_hand_quantity || 0
+        // Store in reactive ref
+        currentStockValues.value[productId] = onHandQuantity
         
-    } catch (error) {
+        // Update the item's current quantity
+        form.items[index].current_quantity = onHandQuantity
+        
+    } catch (error: any) {
         console.error('Failed to load current stock:', error)
-        toast.error('Failed to load current stock')
+        if (error.response?.status === 404) {
+            toast.error('Product not found in this store')
+        } else {
+            toast.error('Failed to load current stock')
+        }
     } finally {
         checkingCurrentStock.value = false
     }
@@ -176,8 +185,9 @@ const loadCurrentStock = async (productId: number, index: number) => {
 
 // Calculate change
 const calculateChange = (item: any) => {
-    const current = currentStockValues.value[item.product_id] || 0
-    return item.new_quantity - current
+    const current = currentStockValues.value[Number(item.product_id)] || 0
+    const newQty = Number(item.new_quantity) || 0
+    return newQty - current
 }
 
 // Get change class
@@ -196,25 +206,66 @@ const getChangeSign = (item: any) => {
     return ''
 }
 
+// Select product from dropdown
+const selectProduct = (product: any, index: number) => {
+    form.items[index].product_id = product.id.toString()
+    productSearch.value = ''
+    showProductDropdown.value = false
+    activeDropdownIndex.value = null
+    loadCurrentStock(product.id, index)
+}
+
+
 // Watch for product selection
-watch(() => form.items, (newItems) => {
-    newItems.forEach((item, index) => {
-        if (item.product_id && !currentStockValues.value[item.product_id]) {
-            loadCurrentStock(Number(item.product_id), index)
+watch(() => form.items.map(item => item.product_id), (newProductIds) => {
+    newProductIds.forEach((productId, index) => {
+        if (productId && !currentStockValues.value[Number(productId)]) {
+            loadCurrentStock(Number(productId), index)
         }
     })
 }, { deep: true })
 
+// Watch for store change - reset current stock values
+watch(() => form.store_id, () => {
+    currentStockValues.value = {}
+    form.items.forEach((item, index) => {
+        if (item.product_id) {
+            loadCurrentStock(Number(item.product_id), index)
+        }
+    })
+})
+
 // Submit form
 const submit = () => {
-    form.post('/inventory/adjustment', {
+    // Prepare data for submission
+    const submitData = {
+        store_id: Number(form.store_id),
+        type: form.type,
+        reason: form.reason,
+        notes: form.notes,
+        items: form.items.map(item => ({
+            product_id: Number(item.product_id),
+            new_quantity: Number(item.new_quantity),
+            reason: item.reason || null
+        })).filter(item => item.product_id) // Filter out items without product
+    }
+    
+    console.log('Submitting adjustment:', submitData)
+    
+    form.transform(() => submitData).post('/inventory/adjustment', {
         onSuccess: () => {
             toast.success('Stock adjustment completed successfully')
             router.visit('/inventory')
         },
         onError: (errors) => {
             console.error('Adjustment failed:', errors)
-            toast.error('Failed to complete adjustment')
+            if (typeof errors === 'object') {
+                Object.entries(errors).forEach(([key, value]) => {
+                    toast.error(`${key}: ${value}`)
+                })
+            } else {
+                toast.error('Failed to complete adjustment')
+            }
         },
     })
 }
@@ -224,11 +275,12 @@ const cancel = () => {
     router.visit('/inventory')
 }
 
-// Select product from dropdown
-const selectProduct = (product: any, index: number) => {
-    form.items[index].product_id = product.id
-    productSearch.value = ''
-    showProductDropdown.value = false
+// Format currency
+const formatCurrency = (value: number) => {
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD'
+    }).format(value)
 }
 </script>
 
@@ -407,16 +459,16 @@ const selectProduct = (product: any, index: number) => {
                                         <input
                                             type="text"
                                             v-model="productSearch"
-                                            @focus="showProductDropdown = true"
+                                            @focus="showProductDropdown = true; activeDropdownIndex = index"
                                             @blur="setTimeout(() => showProductDropdown = false, 200)"
-                                            placeholder="Search product..."
+                                            :placeholder="item.product_id ? getProductDetails(Number(item.product_id))?.name : 'Search product...'"
                                             class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                                         />
                                     </div>
                                     
                                     <!-- Product Dropdown -->
                                     <div
-                                        v-if="showProductDropdown && filteredProducts.length > 0"
+                                        v-if="showProductDropdown && activeDropdownIndex === index && filteredProducts.length > 0"
                                         class="absolute z-10 mt-1 w-full bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto"
                                     >
                                         <div
@@ -426,17 +478,9 @@ const selectProduct = (product: any, index: number) => {
                                             class="px-4 py-2 hover:bg-gray-100 cursor-pointer"
                                         >
                                             <div class="font-medium">{{ product.name }}</div>
-                                            <div class="text-xs text-gray-500">SKU: {{ product.sku }} | Price: ${{ product.selling_price }}</div>
+                                            <div class="text-xs text-gray-500">SKU: {{ product.sku }} | Price: {{ formatCurrency(product.selling_price) }}</div>
                                         </div>
                                     </div>
-                                    
-                                    <!-- Selected Product Display -->
-                                    <div v-if="item.product_id" class="mt-1 text-xs text-gray-600">
-                                        Selected: {{ getProductDetails(Number(item.product_id))?.name }}
-                                    </div>
-                                    <p v-if="form.errors[`items.${index}.product_id`]" class="mt-1 text-sm text-red-600">
-                                        {{ form.errors[`items.${index}.product_id`] }}
-                                    </p>
                                 </div>
 
                                 <!-- Current Stock -->
@@ -449,7 +493,7 @@ const selectProduct = (product: any, index: number) => {
                                             <ArrowPathIcon class="w-4 h-4 animate-spin" />
                                         </span>
                                         <span v-else>
-                                            {{ currentStockValues[item.product_id] || 0 }}
+                                            {{ currentStockValues[Number(item.product_id)] || 0 }}
                                         </span>
                                     </div>
                                 </div>
@@ -547,7 +591,6 @@ const selectProduct = (product: any, index: number) => {
                             <ul class="list-disc list-inside space-y-1">
                                 <li>Stock adjustments are permanent and cannot be undone</li>
                                 <li>All adjustments are logged for audit purposes</li>
-                                <li>Appropriate permissions are required to perform adjustments</li>
                                 <li>A reason must be provided for each adjustment</li>
                             </ul>
                         </div>

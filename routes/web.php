@@ -76,6 +76,10 @@ Route::middleware('auth')->group(function () {
 
         Route::get('/adjustment/create', [InventoryController::class, 'createAdjustment'])->name('inventory.adjustment.create');
         Route::post('/adjustment', [InventoryController::class, 'adjust'])->name('inventory.adjustment.store');
+
+        Route::post('/check-availability', [InventoryController::class, 'checkAvailability']);
+        Route::post('/check-single-availability', [InventoryController::class, 'checkSingleProductAvailability']);
+
     });
 
     // Reports Routes

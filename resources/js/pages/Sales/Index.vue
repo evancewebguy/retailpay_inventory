@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import { Head, Link, router } from '@inertiajs/vue3'
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue'
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import axios from 'axios'
 import { useToast } from 'vue-toastification'
 import { 
     PlusIcon, 
     MagnifyingGlassIcon,
-    FunnelIcon,
-    EyeIcon,
-    DocumentArrowDownIcon
+    EyeIcon
 } from '@heroicons/vue/24/outline'
 import type { Sale, Store, Product } from '@/types'
 
@@ -24,6 +22,7 @@ const sales = ref<{ data: Sale[], current_page: number, last_page: number, total
 })
 const stores = ref<Store[]>([])
 const products = ref<Product[]>([])
+const customers = ref<any[]>([])
 
 // Filters
 const filters = ref({
@@ -45,14 +44,37 @@ const newSale = ref({
     items: [{ product_id: '', quantity: 1 }]
 })
 
+// Computed products map for faster lookup
+const productsMap = computed(() => {
+    if (!Array.isArray(products.value)) {
+        console.warn('Products is not an array:', products.value)
+        return new Map()
+    }
+    
+    return new Map(
+        products.value.map(p => [p.id, p])
+    )
+})
+
 // Fetch functions
 const fetchSales = async (page = 1) => {
     try {
         const response = await axios.get('/api/sales', {
             params: { ...filters.value, page }
         })
-        sales.value = response.data
+        // Handle different response structures
+        if (response.data.data) {
+            sales.value = response.data
+        } else {
+            sales.value = {
+                data: response.data,
+                current_page: 1,
+                last_page: 1,
+                total: response.data.length
+            }
+        }
     } catch (error) {
+        console.error('Failed to fetch sales:', error)
         toast.error('Failed to fetch sales')
     }
 }
@@ -60,8 +82,17 @@ const fetchSales = async (page = 1) => {
 const fetchStores = async () => {
     try {
         const response = await axios.get('/api/stores')
-        stores.value = response.data
+        console.log('Stores response:', response.data)
+        
+        if (Array.isArray(response.data)) {
+            stores.value = response.data
+        } else if (response.data.data && Array.isArray(response.data.data)) {
+            stores.value = response.data.data
+        } else {
+            stores.value = []
+        }
     } catch (error) {
+        console.error('Failed to fetch stores:', error)
         toast.error('Failed to fetch stores')
     }
 }
@@ -69,9 +100,34 @@ const fetchStores = async () => {
 const fetchProducts = async () => {
     try {
         const response = await axios.get('/api/products')
-        products.value = response.data
+        console.log('Products response:', response.data)
+        
+        // Handle different response structures
+        if (Array.isArray(response.data)) {
+            products.value = response.data
+        } else if (response.data.data && Array.isArray(response.data.data)) {
+            products.value = response.data.data
+        } else {
+            products.value = []
+            console.error('Unexpected products data structure:', response.data)
+        }
     } catch (error) {
+        console.error('Failed to fetch products:', error)
         toast.error('Failed to fetch products')
+    }
+}
+
+const fetchCustomers = async () => {
+    try {
+        const response = await axios.get('/api/customers')
+        if (Array.isArray(response.data)) {
+            customers.value = response.data
+        } else if (response.data.data && Array.isArray(response.data.data)) {
+            customers.value = response.data.data
+        }
+    } catch (error) {
+        console.error('Failed to fetch customers:', error)
+        // Non-critical error, don't show toast
     }
 }
 
@@ -87,14 +143,36 @@ const removeItem = (index: number) => {
 }
 
 const calculateTotal = () => {
+    // Ensure products is an array
+    if (!Array.isArray(products.value) || products.value.length === 0) {
+        return 0
+    }
+    
     return newSale.value.items.reduce((total, item) => {
-        const product = products.value.find(p => p.id === Number(item.product_id))
-        return total + (product?.selling_price || 0) * item.quantity
+        if (!item.product_id) return total
+        
+        const product = products.value.find(p => p && p.id === Number(item.product_id))
+        const price = product?.selling_price || 0
+        const quantity = Number(item.quantity) || 0
+        
+        return total + (price * quantity)
     }, 0)
 }
 
 // Actions
 const createSale = async () => {
+    // Validate form
+    if (!newSale.value.store_id) {
+        toast.error('Please select a store')
+        return
+    }
+    
+    const itemsWithProducts = newSale.value.items.filter(item => item.product_id)
+    if (itemsWithProducts.length === 0) {
+        toast.error('Please add at least one product')
+        return
+    }
+    
     try {
         creating.value = true
         await axios.post('/api/sales', newSale.value)
@@ -108,7 +186,9 @@ const createSale = async () => {
             items: [{ product_id: '', quantity: 1 }]
         }
     } catch (error: any) {
-        toast.error(error.response?.data?.message || 'Sale failed')
+        console.error('Sale creation error:', error)
+        const errorMessage = error.response?.data?.message || error.response?.data?.error || 'Sale failed'
+        toast.error(errorMessage)
     } finally {
         creating.value = false
     }
@@ -118,12 +198,8 @@ const viewSale = (id: number) => {
     router.get(`/sales/${id}`)
 }
 
-const exportSales = () => {
-    window.location.href = '/api/sales/export?' + new URLSearchParams(filters.value as any)
-}
-
 // Debounced search
-let searchTimeout: NodeJS.Timeout
+let searchTimeout: ReturnType<typeof setTimeout>
 const handleSearch = () => {
     clearTimeout(searchTimeout)
     searchTimeout = setTimeout(() => {
@@ -138,11 +214,20 @@ const goToPage = (page: number) => {
     }
 }
 
+// Open modal function with debugging
+const openModal = () => {
+    console.log('Opening modal...')
+    console.log('Products available:', products.value.length)
+    console.log('Stores available:', stores.value.length)
+    showCreateModal.value = true
+}
+
 // Initial load
 onMounted(() => {
     fetchSales()
     fetchStores()
     fetchProducts()
+    fetchCustomers()
 })
 </script>
 
@@ -158,7 +243,7 @@ onMounted(() => {
                     <p class="text-gray-600">Manage and track all sales transactions</p>
                 </div>
                 <button
-                    @click="showCreateModal = true"
+                    @click="openModal"
                     class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 flex items-center"
                 >
                     <PlusIcon class="w-5 h-5 mr-2" />
@@ -272,7 +357,7 @@ onMounted(() => {
                                 {{ sale.items?.length || 0 }} items
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-right font-semibold">
-                                ${{ sale.grand_total?.toFixed(2) }}
+                                ${{ Number(sale.grand_total).toFixed(2) }}
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-center">
                                 <span
@@ -305,7 +390,7 @@ onMounted(() => {
                 </table>
 
                 <!-- Pagination -->
-                <div class="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6">
+                <div v-if="sales.last_page > 1" class="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6">
                     <div class="flex-1 flex justify-between sm:hidden">
                         <button
                             @click="goToPage(sales.current_page - 1)"
@@ -375,9 +460,14 @@ onMounted(() => {
         </div>
 
         <!-- Create Sale Modal -->
-        <div v-if="showCreateModal" class="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+        <div v-if="showCreateModal" class="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50" @click.self="showCreateModal = false">
             <div class="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-                <h2 class="text-xl font-bold text-gray-900 mb-4">Create New Sale</h2>
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold text-gray-900">Create New Sale</h2>
+                    <button @click="showCreateModal = false" class="text-gray-500 hover:text-gray-700 text-2xl">
+                        ×
+                    </button>
+                </div>
                 
                 <form @submit.prevent="createSale">
                     <div class="mb-4">
@@ -401,7 +491,9 @@ onMounted(() => {
                             class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         >
                             <option :value="null">Walk-in Customer</option>
-                            <!-- Add customer options here -->
+                            <option v-for="customer in customers" :key="customer.id" :value="customer.id">
+                                {{ customer.name }}
+                            </option>
                         </select>
                     </div>
 
@@ -458,9 +550,10 @@ onMounted(() => {
                         <button
                             type="submit"
                             :disabled="creating"
-                            class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                            class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex items-center"
                         >
-                            {{ creating ? 'Processing...' : 'Complete Sale' }}
+                            <span v-if="creating" class="mr-2">Processing...</span>
+                            <span v-else>Complete Sale</span>
                         </button>
                     </div>
                 </form>

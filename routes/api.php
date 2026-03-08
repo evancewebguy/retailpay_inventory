@@ -37,12 +37,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/transfers/{transfer}/receive', [TransferController::class, 'receive']);
     
     // Inventory
+    Route::post('/inventory/check-availability', [InventoryController::class, 'checkAvailability']);
+    Route::post('/inventory/check-single-availability', [InventoryController::class, 'checkSingleProductAvailability']);
+    
+    Route::get('/inventory/movements/history', [InventoryController::class, 'history']);
+
     Route::get('/inventory', [InventoryController::class, 'index']);
     Route::get('/inventory/{store}', [InventoryController::class, 'show']);
     Route::post('/inventory/adjustments', [InventoryController::class, 'adjust']);
-    Route::get('/inventory/movements/history', [InventoryController::class, 'history']);
-    Route::post('/inventory/check-availability', [InventoryController::class, 'checkAvailability']);
-    Route::post('/inventory/check-single-availability', [InventoryController::class, 'checkSingleProductAvailability']);
+
     // Reports
     Route::get('/reports', [ReportController::class, 'index']);
     Route::get('/reports/stock-valuation', [ReportController::class, 'stockValuation']);
@@ -73,4 +76,17 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/products/{product}', [ProductController::class, 'destroy']);
 
     Route::apiResource('customers', CustomerController::class)->only(['index', 'show']);
+
+    // Sales Routes 
+    Route::prefix('sales')->name('sales.')->group(function () {
+        Route::get('/', [SalesController::class, 'index'])->name('index');
+        Route::get('/create', [SalesController::class, 'create'])->name('create');
+        Route::post('/', [SalesController::class, 'store'])->name('store');
+        Route::get('/{sale}', [SalesController::class, 'show'])->name('show');
+        Route::get('/{sale}/edit', [SalesController::class, 'edit'])->name('edit');
+        Route::put('/{sale}', [SalesController::class, 'update'])->name('update');
+        Route::delete('/{sale}', [SalesController::class, 'destroy'])->name('destroy');
+    });
+
+
 });

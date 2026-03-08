@@ -13,83 +13,187 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
 use App\Exceptions\InsufficientStockException;
 
+use App\Models\AdjustmentItem;
+
+
 
 class InventoryService
 {
 
-    /**
-     * Process a sale
+   /**
+     * Process a sale with enhanced error handling
      */
     public function processSale($storeId, $items, $userId, $customerId = null)
     {
         return DB::transaction(function () use ($storeId, $items, $userId, $customerId) {
+            // Get store name for error messages
+            $store = Store::find($storeId);
+            if (!$store) {
+                throw new \Exception("Store not found");
+            }
+
+            // Validate all items first and collect errors
+            $validationErrors = [];
+            $validItems = [];
+
+            foreach ($items as $index => $item) {
+                $itemNumber = $index + 1;
+                
+                // Check if product exists
+                $product = Product::find($item['product_id']);
+                if (!$product) {
+                    $validationErrors[] = "Item #{$itemNumber}: Product ID {$item['product_id']} not found in system";
+                    continue;
+                }
+
+                // Check if product exists in store inventory
+                $inventory = Inventory::where('store_id', $storeId)
+                    ->where('product_id', $item['product_id'])
+                    ->first();
+
+                if (!$inventory) {
+                    $validationErrors[] = "Item #{$itemNumber}: {$product->name} is not available in {$store->name}";
+                    dump($validationErrors);
+                    continue;
+                }
+
+                // Check available quantity
+                if ($inventory->available_quantity < $item['quantity']) {
+                    $validationErrors[] = "Item #{$itemNumber}: {$product->name} - Only {$inventory->available_quantity} available, but {$item['quantity']} requested";
+                    dump($validationErrors);
+                    continue;
+                }
+
+                // Store valid item with product and inventory for processing
+                $validItems[] = [
+                    'item' => $item,
+                    'product' => $product,
+                    'inventory' => $inventory,
+                    'index' => $index
+                ];
+            }
+
+            // If there are validation errors, throw exception with all messages
+            if (!empty($validationErrors)) {
+                $errorMessage = "Sale validation failed:\n" . implode("\n", $validationErrors);
+                throw new \Exception($errorMessage);
+            }
+
             // Create sale record
             $sale = Sale::create([
                 'store_id' => $storeId,
                 'customer_id' => $customerId,
                 'created_by' => $userId,
-                'status' => 'COMPLETED'
+                'status' => 'COMPLETED',
+                'sale_number' => $this->generateSaleNumber(),
+                'total_amount' => 0,
+                'grand_total' => 0
             ]);
 
             $totalAmount = 0;
+            $processedItems = [];
 
-            foreach ($items as $item) {
-                // Lock inventory for update
-                $inventory = Inventory::where('store_id', $storeId)
-                    ->where('product_id', $item['product_id'])
-                    ->lockForUpdate()
-                    ->firstOrFail();
+            try {
+                // Process each valid item
+                foreach ($validItems as $validItem) {
+                    $item = $validItem['item'];
+                    $product = $validItem['product'];
+                    
+                    // Lock inventory for update (fresh query with lock)
+                    $inventory = Inventory::where('store_id', $storeId)
+                        ->where('product_id', $item['product_id'])
+                        ->lockForUpdate()
+                        ->first();
 
-                if ($inventory->available_quantity < $item['quantity']) {
-                    throw new InsufficientStockException(
-                        "Insufficient stock for product: {$inventory->product->name}"
-                    );
+                    if (!$inventory) {
+                        throw new \Exception("Inventory record disappeared for {$product->name}");
+                    }
+
+                    // Double-check quantity after lock
+                    if ($inventory->available_quantity < $item['quantity']) {
+                        throw new InsufficientStockException(
+                            $product->name,
+                            $inventory->available_quantity,
+                            $item['quantity']
+                        );
+                    }
+
+                    // Calculate item total
+                    $itemTotal = $product->selling_price * $item['quantity'];
+                    $totalAmount += $itemTotal;
+
+                    // Create sale item
+                    $sale->items()->create([
+                        'product_id' => $item['product_id'],
+                        'quantity' => $item['quantity'],
+                        'unit_price' => $product->selling_price,
+                        'discount' => $item['discount'] ?? 0,
+                        'total' => $itemTotal - ($item['discount'] ?? 0)
+                    ]);
+
+                    // Store old quantity for movement record
+                    $oldQuantity = $inventory->quantity;
+                    
+                    // Update inventory
+                    $inventory->decrement('quantity', $item['quantity']);
+                    
+                    // Clear inventory cache
+                    $this->clearInventoryCache($storeId, $item['product_id']);
+
+                    // Create inventory movement
+                    InventoryMovement::create([
+                        'movement_type' => 'SALE',
+                        'product_id' => $item['product_id'],
+                        'from_store_id' => $storeId,
+                        'quantity' => -$item['quantity'],
+                        'previous_quantity' => $oldQuantity,
+                        'new_quantity' => $inventory->fresh()->quantity,
+                        'reference_type' => 'sale',
+                        'reference_id' => $sale->id,
+                        'created_by' => $userId
+                    ]);
+
+                    $processedItems[] = $product->name;
                 }
 
-                // Get product for price
-                $product = Product::findOrFail($item['product_id']);
-                
-                // Calculate item total
-                $itemTotal = $product->selling_price * $item['quantity'];
-                $totalAmount += $itemTotal;
-
-                // Create sale item
-                $saleItem = $sale->items()->create([
-                    'product_id' => $item['product_id'],
-                    'quantity' => $item['quantity'],
-                    'unit_price' => $product->selling_price,
-                    'total' => $itemTotal
+                // Update sale totals
+                $sale->update([
+                    'total_amount' => $totalAmount,
+                    'grand_total' => $totalAmount
                 ]);
 
-                // Update inventory
-                $oldQuantity = $inventory->quantity;
-                $inventory->decrement('quantity', $item['quantity']);
-                
-                // Clear inventory cache
-                $this->clearInventoryCache($storeId, $item['product_id']);
+                return $sale;
 
-                // Create inventory movement
-                InventoryMovement::create([
-                    'movement_type' => 'SALE',
-                    'product_id' => $item['product_id'],
-                    'from_store_id' => $storeId,
-                    'quantity' => -$item['quantity'],
-                    'previous_quantity' => $oldQuantity,
-                    'new_quantity' => $inventory->fresh()->quantity,
-                    'reference_type' => 'sale',
-                    'reference_id' => $sale->id,
-                    'created_by' => $userId
-                ]);
+            } catch (\Exception $e) {
+                // If anything fails during processing, delete the sale record
+                $sale->delete();
+                throw $e;
             }
-
-            // Update sale totals
-            $sale->update([
-                'total_amount' => $totalAmount,
-                'grand_total' => $totalAmount
-            ]);
-
-            return $sale;
         }, 5); // 5 retry attempts for deadlocks
+    }
+
+    /**
+     * Generate a unique sale number
+     */
+    private function generateSaleNumber()
+    {
+        $prefix = 'SAL';
+        $date = now()->format('Ymd');
+        $lastSale = Sale::whereDate('created_at', today())->count();
+        
+        return $prefix . '-' . $date . '-' . str_pad($lastSale + 1, 4, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Clear inventory cache
+     */
+    private function clearInventoryCache($storeId, $productId = null)
+    {
+        Cache::forget("inventory.{$storeId}." . ($productId ?? 'all'));
+        
+        if ($productId) {
+            Cache::forget("inventory.{$storeId}.all");
+        }
     }
 
     /**
@@ -108,6 +212,7 @@ class InventoryService
             ]);
 
             foreach ($items as $item) {
+                            
                 // Lock source inventory
                 $fromInventory = Inventory::where('store_id', $fromStoreId)
                     ->where('product_id', $item['product_id'])
@@ -116,7 +221,9 @@ class InventoryService
 
                 if ($fromInventory->available_quantity < $item['quantity']) {
                     throw new InsufficientStockException(
-                        "Insufficient stock for transfer"
+                        $item->name,
+                        $item->available_quantity,
+                        $item['quantity']
                     );
                 }
 
@@ -211,19 +318,89 @@ class InventoryService
     /**
      * Adjust stock levels
      */
+    // public function adjustStock($storeId, $items, $type, $reason, $notes, $userId)
+    // {
+    //     return DB::transaction(function () use ($storeId, $items, $type, $reason, $notes, $userId) {
+    //         $adjustment = \App\Models\StockAdjustment::create([
+    //             'store_id' => $storeId,
+    //             'type' => $type,
+    //             'reason' => $reason,
+    //             'notes' => $notes,
+    //             'created_by' => $userId,
+    //             'status' => 'COMPLETED'
+    //         ]);
+
+    //         foreach ($items as $item) {
+    //             $inventory = Inventory::firstOrCreate(
+    //                 [
+    //                     'store_id' => $storeId,
+    //                     'product_id' => $item['product_id']
+    //                 ],
+    //                 ['quantity' => 0, 'reserved_quantity' => 0]
+    //             );
+
+    //             $oldQuantity = $inventory->quantity;
+    //             $newQuantity = $item['new_quantity'];
+    //             $quantityChange = $newQuantity - $oldQuantity;
+
+    //             // Create adjustment item
+    //             $adjustment->items()->create([
+    //                 'product_id' => $item['product_id'],
+    //                 'previous_quantity' => $oldQuantity,
+    //                 'adjusted_quantity' => $quantityChange,
+    //                 'new_quantity' => $newQuantity,
+    //                 'reason' => $item['reason'] ?? null
+    //             ]);
+
+    //             // Update inventory
+    //             $inventory->update(['quantity' => $newQuantity]);
+
+    //             // Create inventory movement record
+    //             InventoryMovement::create([
+    //                 'movement_type' => 'ADJUSTMENT',
+    //                 'product_id' => $item['product_id'],
+    //                 'from_store_id' => $storeId,
+    //                 'quantity' => $quantityChange,
+    //                 'previous_quantity' => $oldQuantity,
+    //                 'new_quantity' => $newQuantity,
+    //                 'reason' => $reason,
+    //                 'notes' => $notes . ($item['reason'] ? " - Item reason: {$item['reason']}" : ''),
+    //                 'reference_type' => 'adjustment',
+    //                 'reference_id' => $adjustment->id,
+    //                 'created_by' => $userId
+    //             ]);
+    //         }
+
+    //         return $adjustment;
+    //     });
+    // }
+
     public function adjustStock($storeId, $items, $type, $reason, $notes, $userId)
     {
         return DB::transaction(function () use ($storeId, $items, $type, $reason, $notes, $userId) {
-            $adjustment = \App\Models\StockAdjustment::create([
+            // Generate adjustment number
+            $adjustmentNumber = StockAdjustment::generateAdjustmentNumber();
+            
+            dump('Creating stock adjustment...', [
+                'adjustment_number' => $adjustmentNumber,
+                'store_id' => $storeId,
+                'type' => $type,
+                'reason' => $reason,
+                'created_by' => $userId
+            ]);
+            
+            // Create adjustment record
+            $adjustment = StockAdjustment::create([
+                'adjustment_number' => $adjustmentNumber,
                 'store_id' => $storeId,
                 'type' => $type,
                 'reason' => $reason,
                 'notes' => $notes,
-                'created_by' => $userId,
-                'status' => 'COMPLETED'
+                'created_by' => $userId
             ]);
 
             foreach ($items as $item) {
+                // Get or create inventory
                 $inventory = Inventory::firstOrCreate(
                     [
                         'store_id' => $storeId,
@@ -236,14 +413,24 @@ class InventoryService
                 $newQuantity = $item['new_quantity'];
                 $quantityChange = $newQuantity - $oldQuantity;
 
+                dump('Processing item:', [
+                    'product_id' => $item['product_id'],
+                    'old_quantity' => $oldQuantity,
+                    'new_quantity' => $newQuantity,
+                    'change' => $quantityChange
+                ]);
+
                 // Create adjustment item
-                $adjustment->items()->create([
+                $adjustmentItem = AdjustmentItem::create([
+                    'stock_adjustment_id' => $adjustment->id,
                     'product_id' => $item['product_id'],
                     'previous_quantity' => $oldQuantity,
                     'adjusted_quantity' => $quantityChange,
                     'new_quantity' => $newQuantity,
                     'reason' => $item['reason'] ?? null
                 ]);
+
+                dump('Adjustment item created:', ['id' => $adjustmentItem->id]);
 
                 // Update inventory
                 $inventory->update(['quantity' => $newQuantity]);
@@ -264,7 +451,12 @@ class InventoryService
                 ]);
             }
 
-            return $adjustment;
+            dump('Adjustment completed successfully', [
+                'adjustment_id' => $adjustment->id,
+                'items_processed' => count($items)
+            ]);
+
+            return $adjustment->load('items');
         });
     }
 
@@ -287,17 +479,6 @@ class InventoryService
         });
     }
 
-    /**
-     * Clear inventory cache
-     */
-    protected function clearInventoryCache($storeId, $productId = null)
-    {
-        Cache::forget("inventory.{$storeId}." . ($productId ?? 'all'));
-        
-        if ($productId) {
-            Cache::forget("inventory.{$storeId}.all");
-        }
-    }
 
     /**
      * Get inventory movement history
