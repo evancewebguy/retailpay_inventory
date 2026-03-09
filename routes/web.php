@@ -68,7 +68,7 @@ Route::middleware('auth')->group(function () {
 
     // Inventory Routes
     Route::prefix('inventory')->name('inventory.')->group(function () {
-        Route::get('/', [InventoryController::class, 'index'])->name('index');
+        Route::get('/', [InventoryController::class, 'index'])->name('inventory.index');
         Route::get('/{store}', [InventoryController::class, 'show'])->name('show');
         // Route::post('/adjustments', [InventoryController::class, 'adjust'])->name('adjust');
         Route::get('/movements/history', [InventoryController::class, 'history'])->name('history');

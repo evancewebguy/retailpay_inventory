@@ -195,6 +195,7 @@ class InventoryController extends Controller implements HasMiddleware
             return redirect()->route('inventory.index')
                 ->with('success', 'Stock adjustment completed successfully');
 
+                
         } catch (\Exception $e) {
             return redirect()->back()
                 ->with('error', 'Adjustment failed: ' . $e->getMessage())

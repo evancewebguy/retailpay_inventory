@@ -25,10 +25,13 @@ class InventoryService
      */
     public function processSale($storeId, $items, $userId, $customerId = null)
     {
+
         return DB::transaction(function () use ($storeId, $items, $userId, $customerId) {
+            
             // Get store name for error messages
             $store = Store::find($storeId);
             if (!$store) {
+                dump('❌ Store not found!', ['storeId' => $storeId]);
                 throw new \Exception("Store not found");
             }
 
@@ -42,7 +45,9 @@ class InventoryService
                 // Check if product exists
                 $product = Product::find($item['product_id']);
                 if (!$product) {
-                    $validationErrors[] = "Item #{$itemNumber}: Product ID {$item['product_id']} not found in system";
+                    $error = "Item #{$itemNumber}: Product ID {$item['product_id']} not found in system";
+                    $validationErrors[] = $error;
+                    dump('❌ ' . $error);
                     continue;
                 }
 
@@ -52,15 +57,17 @@ class InventoryService
                     ->first();
 
                 if (!$inventory) {
-                    $validationErrors[] = "Item #{$itemNumber}: {$product->name} is not available in {$store->name}";
-                    dump($validationErrors);
+                    $error = "Item #{$itemNumber}: {$product->name} is not available in {$store->name}";
+                    $validationErrors[] = $error;
+                    dump('❌ ' . $error);
                     continue;
                 }
 
                 // Check available quantity
                 if ($inventory->available_quantity < $item['quantity']) {
-                    $validationErrors[] = "Item #{$itemNumber}: {$product->name} - Only {$inventory->available_quantity} available, but {$item['quantity']} requested";
-                    dump($validationErrors);
+                    $error = "Item #{$itemNumber}: {$product->name} - Only {$inventory->available_quantity} available, but {$item['quantity']} requested";
+                    $validationErrors[] = $error;
+                    dump('❌ ' . $error);
                     continue;
                 }
 
@@ -76,19 +83,27 @@ class InventoryService
             // If there are validation errors, throw exception with all messages
             if (!empty($validationErrors)) {
                 $errorMessage = "Sale validation failed:\n" . implode("\n", $validationErrors);
+                dump('❌ VALIDATION FAILED:', $validationErrors);
                 throw new \Exception($errorMessage);
             }
 
             // Create sale record
+            $saleNumber = $this->generateSaleNumber();
+            
             $sale = Sale::create([
                 'store_id' => $storeId,
                 'customer_id' => $customerId,
                 'created_by' => $userId,
                 'status' => 'COMPLETED',
-                'sale_number' => $this->generateSaleNumber(),
+                'sale_number' => $saleNumber,
                 'total_amount' => 0,
                 'grand_total' => 0
             ]);
+
+            if (!$sale || !$sale->id) {
+                dump('❌ Failed to create sale record');
+                throw new \Exception("Failed to create sale record");
+            }
 
             $totalAmount = 0;
             $processedItems = [];
@@ -106,11 +121,13 @@ class InventoryService
                         ->first();
 
                     if (!$inventory) {
+                        dump('❌ Inventory record disappeared!');
                         throw new \Exception("Inventory record disappeared for {$product->name}");
                     }
 
                     // Double-check quantity after lock
                     if ($inventory->available_quantity < $item['quantity']) {
+                        
                         throw new InsufficientStockException(
                             $product->name,
                             $inventory->available_quantity,
@@ -121,9 +138,10 @@ class InventoryService
                     // Calculate item total
                     $itemTotal = $product->selling_price * $item['quantity'];
                     $totalAmount += $itemTotal;
+                    
 
                     // Create sale item
-                    $sale->items()->create([
+                    $saleItem = $sale->items()->create([
                         'product_id' => $item['product_id'],
                         'quantity' => $item['quantity'],
                         'unit_price' => $product->selling_price,
@@ -131,28 +149,39 @@ class InventoryService
                         'total' => $itemTotal - ($item['discount'] ?? 0)
                     ]);
 
+                    if (!$saleItem || !$saleItem->id) {
+                        dump('❌ Failed to create sale item');
+                        throw new \Exception("Failed to create sale item for {$product->name}");
+                    }
+
                     // Store old quantity for movement record
                     $oldQuantity = $inventory->quantity;
                     
                     // Update inventory
                     $inventory->decrement('quantity', $item['quantity']);
+                    $inventory->refresh();
+                   
                     
                     // Clear inventory cache
                     $this->clearInventoryCache($storeId, $item['product_id']);
 
                     // Create inventory movement
-                    InventoryMovement::create([
+                    $movement = InventoryMovement::create([
                         'movement_type' => 'SALE',
                         'product_id' => $item['product_id'],
                         'from_store_id' => $storeId,
                         'quantity' => -$item['quantity'],
                         'previous_quantity' => $oldQuantity,
-                        'new_quantity' => $inventory->fresh()->quantity,
+                        'new_quantity' => $inventory->quantity,
                         'reference_type' => 'sale',
                         'reference_id' => $sale->id,
                         'created_by' => $userId
                     ]);
 
+                    if (!$movement || !$movement->id) {
+                        dump('❌ Failed to create inventory movement');
+                        throw new \Exception("Failed to create inventory movement");
+                    }
                     $processedItems[] = $product->name;
                 }
 
@@ -161,12 +190,15 @@ class InventoryService
                     'total_amount' => $totalAmount,
                     'grand_total' => $totalAmount
                 ]);
-
                 return $sale;
 
             } catch (\Exception $e) {
                 // If anything fails during processing, delete the sale record
+                dump('❌ ERROR DURING PROCESSING!');
+                dump('Error message:', $e->getMessage());
+                dump('Deleting sale record...');
                 $sale->delete();
+                dump('✅ Sale record deleted');
                 throw $e;
             }
         }, 5); // 5 retry attempts for deadlocks
@@ -318,76 +350,12 @@ class InventoryService
     /**
      * Adjust stock levels
      */
-    // public function adjustStock($storeId, $items, $type, $reason, $notes, $userId)
-    // {
-    //     return DB::transaction(function () use ($storeId, $items, $type, $reason, $notes, $userId) {
-    //         $adjustment = \App\Models\StockAdjustment::create([
-    //             'store_id' => $storeId,
-    //             'type' => $type,
-    //             'reason' => $reason,
-    //             'notes' => $notes,
-    //             'created_by' => $userId,
-    //             'status' => 'COMPLETED'
-    //         ]);
-
-    //         foreach ($items as $item) {
-    //             $inventory = Inventory::firstOrCreate(
-    //                 [
-    //                     'store_id' => $storeId,
-    //                     'product_id' => $item['product_id']
-    //                 ],
-    //                 ['quantity' => 0, 'reserved_quantity' => 0]
-    //             );
-
-    //             $oldQuantity = $inventory->quantity;
-    //             $newQuantity = $item['new_quantity'];
-    //             $quantityChange = $newQuantity - $oldQuantity;
-
-    //             // Create adjustment item
-    //             $adjustment->items()->create([
-    //                 'product_id' => $item['product_id'],
-    //                 'previous_quantity' => $oldQuantity,
-    //                 'adjusted_quantity' => $quantityChange,
-    //                 'new_quantity' => $newQuantity,
-    //                 'reason' => $item['reason'] ?? null
-    //             ]);
-
-    //             // Update inventory
-    //             $inventory->update(['quantity' => $newQuantity]);
-
-    //             // Create inventory movement record
-    //             InventoryMovement::create([
-    //                 'movement_type' => 'ADJUSTMENT',
-    //                 'product_id' => $item['product_id'],
-    //                 'from_store_id' => $storeId,
-    //                 'quantity' => $quantityChange,
-    //                 'previous_quantity' => $oldQuantity,
-    //                 'new_quantity' => $newQuantity,
-    //                 'reason' => $reason,
-    //                 'notes' => $notes . ($item['reason'] ? " - Item reason: {$item['reason']}" : ''),
-    //                 'reference_type' => 'adjustment',
-    //                 'reference_id' => $adjustment->id,
-    //                 'created_by' => $userId
-    //             ]);
-    //         }
-
-    //         return $adjustment;
-    //     });
-    // }
-
     public function adjustStock($storeId, $items, $type, $reason, $notes, $userId)
     {
         return DB::transaction(function () use ($storeId, $items, $type, $reason, $notes, $userId) {
             // Generate adjustment number
             $adjustmentNumber = StockAdjustment::generateAdjustmentNumber();
             
-            dump('Creating stock adjustment...', [
-                'adjustment_number' => $adjustmentNumber,
-                'store_id' => $storeId,
-                'type' => $type,
-                'reason' => $reason,
-                'created_by' => $userId
-            ]);
             
             // Create adjustment record
             $adjustment = StockAdjustment::create([
@@ -413,12 +381,6 @@ class InventoryService
                 $newQuantity = $item['new_quantity'];
                 $quantityChange = $newQuantity - $oldQuantity;
 
-                dump('Processing item:', [
-                    'product_id' => $item['product_id'],
-                    'old_quantity' => $oldQuantity,
-                    'new_quantity' => $newQuantity,
-                    'change' => $quantityChange
-                ]);
 
                 // Create adjustment item
                 $adjustmentItem = AdjustmentItem::create([
@@ -430,7 +392,6 @@ class InventoryService
                     'reason' => $item['reason'] ?? null
                 ]);
 
-                dump('Adjustment item created:', ['id' => $adjustmentItem->id]);
 
                 // Update inventory
                 $inventory->update(['quantity' => $newQuantity]);
@@ -451,10 +412,10 @@ class InventoryService
                 ]);
             }
 
-            dump('Adjustment completed successfully', [
-                'adjustment_id' => $adjustment->id,
-                'items_processed' => count($items)
-            ]);
+            // dump('Adjustment completed successfully', [
+            //     'adjustment_id' => $adjustment->id,
+            //     'items_processed' => count($items)
+            // ]);
 
             return $adjustment->load('items');
         });

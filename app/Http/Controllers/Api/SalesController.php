@@ -49,7 +49,6 @@ class SalesController extends Controller
 
     public function store(SaleRequest $request)
     {
-        
         try {
             // Check if user has access to this store
             if (!auth()->user()->canAccessStore($request->store_id)) {
