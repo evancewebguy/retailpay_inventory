@@ -32,7 +32,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('sales', SalesController::class);
     
     // Transfers
-    Route::apiResource('transfers', TransferController::class);
+    // Route::apiResource('transfers', TransferController::class);
     Route::post('/transfers/{transfer}/approve', [TransferController::class, 'approve']);
     Route::post('/transfers/{transfer}/receive', [TransferController::class, 'receive']);
     

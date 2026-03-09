@@ -74,6 +74,7 @@ class TransferController extends Controller
                 auth()->id(),
                 $request->expected_delivery_date
             );
+            
 
             return response()->json([
                 'message' => 'Transfer created successfully',

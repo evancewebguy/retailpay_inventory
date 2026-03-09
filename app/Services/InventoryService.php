@@ -234,45 +234,104 @@ class InventoryService
     public function transferStock($fromStoreId, $toStoreId, $items, $userId, $expectedDeliveryDate = null)
     {
         return DB::transaction(function () use ($fromStoreId, $toStoreId, $items, $userId, $expectedDeliveryDate) {
-            // Create transfer record
-            $transfer = Transfer::create([
+            
+            // Check if stores exist
+            $fromStore = Store::find($fromStoreId);
+            $toStore = Store::find($toStoreId);
+
+            if (!$fromStore) {
+                dump('❌ Source store not found!');
+                throw new \Exception("Source store not found");
+            }
+            
+            if (!$toStore) {
+                dump('❌ Destination store not found!');
+                throw new \Exception("Destination store not found");
+            }
+
+            // Create transfer record            
+            $transferData = [
                 'from_store_id' => $fromStoreId,
                 'to_store_id' => $toStoreId,
                 'expected_delivery_date' => $expectedDeliveryDate,
                 'created_by' => $userId,
                 'status' => 'PENDING'
-            ]);
+            ];
+                        
+            $transfer = Transfer::create($transferData);
 
-            foreach ($items as $item) {
-                            
+            if (!$transfer || !$transfer->id) {
+                dump('❌ Failed to create transfer record');
+                throw new \Exception("Failed to create transfer record");
+            }
+
+            $processedItems = [];
+            $itemIndex = 0;
+
+            foreach ($items as $index => $item) {
+                $itemIndex++;
+                
+                // Check if product exists
+                $product = Product::find($item['product_id']);
+                
+                if (!$product) {
+                    dump('❌ Product not found for ID:', $item['product_id']);
+                    throw new \Exception("Product ID {$item['product_id']} not found");
+                }
+                
                 // Lock source inventory
+                // dump('Locking source inventory...');
                 $fromInventory = Inventory::where('store_id', $fromStoreId)
                     ->where('product_id', $item['product_id'])
                     ->lockForUpdate()
-                    ->firstOrFail();
+                    ->first();
+                
+                if (!$fromInventory) {  
+                    // Instead of firstOrFail, show what's available
+                    $allInventory = Inventory::where('store_id', $fromStoreId)->get();                    
+                    throw new \Exception("Inventory record not found for product {$product->name} in source store");
+                }
 
+                // Check available quantity
                 if ($fromInventory->available_quantity < $item['quantity']) {
                     throw new InsufficientStockException(
-                        $item->name,
-                        $item->available_quantity,
+                        $product->name,
+                        $fromInventory->available_quantity,
                         $item['quantity']
                     );
                 }
 
-                // Create transfer item
-                $transferItem = $transfer->items()->create([
+                // Create transfer item                
+                $transferItemData = [
+                    'transfer_id' => $transfer->id,
                     'product_id' => $item['product_id'],
                     'quantity_requested' => $item['quantity'],
                     'status' => 'PENDING'
-                ]);
-
+                ];
+                                
+                $transferItem = $transfer->items()->create($transferItemData);
+                
+                if (!$transferItem || !$transferItem->id) {
+                    dump('❌ Failed to create transfer item');
+                    throw new \Exception("Failed to create transfer item for product {$product->name}");
+                }
+                
                 // Reserve stock
+                $oldReserved = $fromInventory->reserved_quantity;
                 $fromInventory->increment('reserved_quantity', $item['quantity']);
+                $fromInventory->refresh();
+            
+
+                $processedItems[] = [
+                    'product_name' => $product->name,
+                    'quantity' => $item['quantity']
+                ];
             }
 
-            return $transfer;
+            return $transfer->load('items.product');
         });
     }
+
 
     /**
      * Receive transfer

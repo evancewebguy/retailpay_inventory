@@ -1,9 +1,11 @@
 <script setup lang="ts">
+
 import { Head, Link, router, useForm } from '@inertiajs/vue3'
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue'
 import { ref, computed, watch } from 'vue'
 import { useToast } from 'vue-toastification'
 import axios from 'axios'
+
 import {
     ArrowPathIcon,
     PlusIcon,
@@ -69,6 +71,7 @@ const form = useForm({
 
 // Loading states
 const checkingAvailability = ref(false)
+
 const availabilityResults = ref<Record<number, {
     product_id: number
     product_name: string
@@ -135,8 +138,8 @@ const canSubmit = computed(() => {
 })
 
 const allItemsAvailable = computed(() => {
-    if (Object.keys(availabilityResults.value).length === 0) return false
-    return Object.values(availabilityResults.value).every(result => result.can_fulfill)
+    if (!availabilityResults.value || Object.keys(availabilityResults.value).length === 0) return false
+    return Object.values(availabilityResults.value).every(result => result?.can_fulfill)
 })
 
 // Methods
@@ -247,6 +250,8 @@ const checkAvailability = async () => {
 
 // Get stock status message
 const getStockStatusMessage = (productId: number, requestedQty: number) => {
+    if (!availabilityResults.value) return null
+    
     const availability = availabilityResults.value[productId]
     if (!availability) return null
     
@@ -267,6 +272,7 @@ const getStockStatusMessage = (productId: number, requestedQty: number) => {
         class: 'text-green-600 bg-green-50 p-2 rounded-lg'
     }
 }
+
 
 // Watch for changes that affect availability
 watch([() => form.from_store_id, () => form.items], () => {
@@ -553,12 +559,12 @@ const formatCurrency = (value: number) => {
                     </div>
 
                     <!-- Items Summary -->
-                    <div v-if="form.items.length > 0" class="mt-4 p-4 bg-gray-50 rounded-lg">
+                    <div v-if="form.items && form.items.length > 0" class="mt-4 p-4 bg-gray-50 rounded-lg">
                         <div class="flex justify-between items-center">
                             <span class="text-sm font-medium text-gray-700">Total Items:</span>
                             <span class="text-lg font-bold text-indigo-600">{{ totalItems }}</span>
                         </div>
-                        <div v-if="Object.keys(availabilityResults.value).length > 0" class="mt-2">
+                        <div v-if="availabilityResults && Object.keys(availabilityResults).length > 0" class="mt-2">
                             <div class="flex items-center justify-between text-sm">
                                 <span class="text-gray-600">Availability Status:</span>
                                 <span :class="allItemsAvailable ? 'text-green-600' : 'text-yellow-600'">

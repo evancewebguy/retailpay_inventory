@@ -26,7 +26,7 @@ class DatabaseSeeder extends Seeder
 
         // Create permissions
         $permissions = [
-            'view sales', 'create sales', 'view transfers', 'create transfers',
+            'view sales', 'create sales', 'view transfers', 'create transfers','receive transfers',
             'approve transfers', 'view inventory', 'adjust inventory',
             'view reports', 'manage users'
         ];
