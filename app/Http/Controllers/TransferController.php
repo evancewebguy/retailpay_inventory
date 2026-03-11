@@ -180,7 +180,7 @@ class TransferController extends Controller implements HasMiddleware
                 ->with('error', 'Unauthorized to view this transfer');
         }
 
-        $transfer->load(['items.product', 'fromStore', 'toStore', 'creator', 'approver', 'receiver']);
+        $transfer->load(['items.product', 'fromStore.branch', 'toStore.branch', 'creator', 'approver', 'receiver']);
 
         // Check if user can approve/receive
         $user = auth()->user();
@@ -246,6 +246,7 @@ class TransferController extends Controller implements HasMiddleware
             'products' => $products,
         ]);
     }
+
 
     /**
      * Update the specified transfer.
@@ -326,27 +327,29 @@ class TransferController extends Controller implements HasMiddleware
     }
 
     /**
-     * Mark transfer as shipped.
+     * Mark transfer as shipped
      */
     public function ship(Request $request, Transfer $transfer)
     {
         try {
-            if ($transfer->status !== 'PROCESSING') {
-                return redirect()->back()
-                    ->with('error', 'Only processing transfers can be shipped');
-            }
-
-            // Check access to source store
+            // Check if user has access to source store
             if (!auth()->user()->canAccessStore($transfer->from_store_id)) {
                 return redirect()->back()
                     ->with('error', 'Unauthorized to ship from this store');
             }
 
+            // Can only ship if status is PROCESSING
+            if ($transfer->status !== 'PROCESSING') {
+                return redirect()->back()
+                    ->with('error', 'Only processing transfers can be shipped');
+            }
+
+            // Update transfer status
             $transfer->update([
                 'status' => 'SHIPPED',
             ]);
 
-            // Update items
+            // Update items status
             foreach ($transfer->items as $item) {
                 $item->update([
                     'quantity_shipped' => $item->quantity_requested,
@@ -362,6 +365,7 @@ class TransferController extends Controller implements HasMiddleware
                 ->with('error', 'Ship failed: ' . $e->getMessage());
         }
     }
+
 
     /**
      * Receive the specified transfer.

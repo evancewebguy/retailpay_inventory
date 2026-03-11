@@ -15,13 +15,14 @@ use Illuminate\Http\Request;
 // Public routes (guest only)
 Route::middleware('guest')->group(function () {
     Route::get('/', function () {
-        return Inertia::render('Welcome', [
+        return Inertia::render('auth/Login', [
             'canLogin' => true,
             'canRegister' => true,
             'laravelVersion' => app()->version(),
             'phpVersion' => PHP_VERSION,
         ]);
     })->name('home');
+
 
     Route::get('/login', [LoginController::class, 'create'])->name('login');
     Route::post('/login', [LoginController::class, 'store']);
@@ -64,6 +65,8 @@ Route::middleware('auth')->group(function () {
         Route::get('/{transfer}/edit', [TransferController::class, 'edit'])->name('edit');
         Route::put('/{transfer}', [TransferController::class, 'update'])->name('update');
         Route::delete('/{transfer}', [TransferController::class, 'destroy'])->name('destroy');
+
+        Route::post('/{transfer}/ship', [TransferController::class, 'ship'])->name('ship');
     });
 
     // Inventory Routes
@@ -87,8 +90,13 @@ Route::middleware('auth')->group(function () {
         Route::get('/', [ReportController::class, 'index'])->name('index');
         Route::get('/stock-valuation', [ReportController::class, 'stockValuation'])->name('stock-valuation');
         Route::get('/movement-history', [ReportController::class, 'movementHistory'])->name('movement-history');
-        Route::get('/sales', [ReportController::class, 'sales'])->name('sales');
-        Route::get('/products', [ReportController::class, 'products'])->name('products');
+        Route::get('/sales', [ReportController::class, 'salesReport'])->name('sales');
+        Route::get('/products', [ReportController::class, 'productPerformance'])->name('products');
+        Route::get('/low-stock', [ReportController::class, 'lowStock'])->name('low-stock');
+    
+        // Export route
+        Route::post('/export', [ReportController::class, 'export'])->name('export');
+
     });
 
     // Master Data Routes

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Head, Link, router } from '@inertiajs/vue3'
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useToast } from 'vue-toastification'
 import {
     ArrowPathIcon,
@@ -34,17 +34,19 @@ const props = defineProps<{
             name: string
             code: string
             branch?: {
+                id: number
                 name: string
-            }
-        }
+            } | null
+        } | null
         to_store: {
             id: number
             name: string
             code: string
             branch?: {
+                id: number
                 name: string
-            }
-        }
+            } | null
+        } | null
         items: Array<{
             id: number
             product_id: number
@@ -62,7 +64,7 @@ const props = defineProps<{
         creator: {
             id: number
             name: string
-        }
+        } | null
         approver?: {
             id: number
             name: string
@@ -134,7 +136,7 @@ const getItemStatusBadge = (status: string) => {
 
 // Format date
 const formatDate = (date: string | null) => {
-    if (!date) return 'N/A'
+    if (!date) return 'Not set'
     return new Date(date).toLocaleDateString('en-US', {
         year: 'numeric',
         month: 'long',
@@ -164,6 +166,13 @@ const calculateProgress = () => {
     
     return Math.round((receivedItems / totalItems) * 100)
 }
+
+// Check if all items are received
+const allItemsReceived = computed(() => {
+    return props.transfer.items.every(
+        item => item.status === 'RECEIVED' || (item.quantity_received && item.quantity_received >= item.quantity_requested)
+    )
+})
 
 // Actions
 const approveTransfer = () => {
@@ -221,12 +230,17 @@ const cancelTransfer = () => {
     })
 }
 
-// Format currency (if needed)
+// Format currency
 const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('en-US', {
         style: 'currency',
         currency: 'USD'
     }).format(value)
+}
+
+// Helper to get branch name safely
+const getBranchName = (store: any) => {
+    return store?.branch?.name || 'Main Branch'
 }
 </script>
 
@@ -257,7 +271,8 @@ const formatCurrency = (value: number) => {
                             </span>
                         </div>
                         <p class="text-gray-600">
-                            Created {{ formatDateTime(transfer.created_at) }} by {{ transfer.creator?.name }}
+                            Created {{ formatDateTime(transfer.created_at) }} 
+                            <span v-if="transfer.creator">by {{ transfer.creator.name }}</span>
                         </p>
                     </div>
                 </div>
@@ -297,7 +312,9 @@ const formatCurrency = (value: number) => {
             <div class="bg-white rounded-lg shadow p-6">
                 <div class="flex justify-between items-center mb-2">
                     <h2 class="text-lg font-semibold text-gray-900">Transfer Progress</h2>
-                    <span class="text-sm font-medium text-gray-600">{{ calculateProgress() }}% Complete</span>
+                    <span class="text-sm font-medium" :class="allItemsReceived ? 'text-green-600' : 'text-gray-600'">
+                        {{ calculateProgress() }}% Complete
+                    </span>
                 </div>
                 <div class="w-full bg-gray-200 rounded-full h-2.5">
                     <div
@@ -317,12 +334,12 @@ const formatCurrency = (value: number) => {
                         </div>
                         <div>
                             <p class="text-sm text-gray-500">Source Store</p>
-                            <h3 class="text-xl font-bold text-gray-900">{{ transfer.from_store?.name }}</h3>
+                            <h3 class="text-xl font-bold text-gray-900">{{ transfer.from_store?.name || 'N/A' }}</h3>
                         </div>
                     </div>
-                    <div class="space-y-2 text-sm">
-                        <p><span class="font-medium">Code:</span> {{ transfer.from_store?.code }}</p>
-                        <p><span class="font-medium">Branch:</span> {{ transfer.from_store?.branch?.name }}</p>
+                    <div class="space-y-2 text-sm" v-if="transfer.from_store">
+                        <p><span class="font-medium">Code:</span> {{ transfer.from_store.code }}</p>
+                        <p><span class="font-medium">Branch:</span> {{ getBranchName(transfer.from_store) }}</p>
                     </div>
                 </div>
 
@@ -334,12 +351,12 @@ const formatCurrency = (value: number) => {
                         </div>
                         <div>
                             <p class="text-sm text-gray-500">Destination Store</p>
-                            <h3 class="text-xl font-bold text-gray-900">{{ transfer.to_store?.name }}</h3>
+                            <h3 class="text-xl font-bold text-gray-900">{{ transfer.to_store?.name || 'N/A' }}</h3>
                         </div>
                     </div>
-                    <div class="space-y-2 text-sm">
-                        <p><span class="font-medium">Code:</span> {{ transfer.to_store?.code }}</p>
-                        <p><span class="font-medium">Branch:</span> {{ transfer.to_store?.branch?.name }}</p>
+                    <div class="space-y-2 text-sm" v-if="transfer.to_store">
+                        <p><span class="font-medium">Code:</span> {{ transfer.to_store.code }}</p>
+                        <p><span class="font-medium">Branch:</span> {{ getBranchName(transfer.to_store) }}</p>
                     </div>
                 </div>
             </div>
@@ -376,7 +393,7 @@ const formatCurrency = (value: number) => {
 
                 <div v-if="transfer.notes" class="mt-4 p-4 bg-gray-50 rounded-lg">
                     <p class="text-sm text-gray-500 mb-1">Notes:</p>
-                    <p class="text-gray-700">{{ transfer.notes }}</p>
+                    <p class="text-gray-700 whitespace-pre-line">{{ transfer.notes }}</p>
                 </div>
             </div>
 
@@ -386,48 +403,50 @@ const formatCurrency = (value: number) => {
                     <h2 class="text-lg font-semibold text-gray-900">Items</h2>
                 </div>
                 
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Product</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">SKU</th>
-                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requested</th>
-                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Shipped</th>
-                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Received</th>
-                            <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        <tr v-for="item in transfer.items" :key="item.id">
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                {{ item.product.name }}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                {{ item.product.sku }}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-right">
-                                {{ item.quantity_requested }}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-right">
-                                {{ item.quantity_shipped || '-' }}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-right">
-                                {{ item.quantity_received || '-' }}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-center">
-                                <span
-                                    :class="['px-2 py-1 text-xs rounded-full', getItemStatusBadge(item.status)]"
-                                >
-                                    {{ item.status }}
-                                </span>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Product</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">SKU</th>
+                                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requested</th>
+                                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Shipped</th>
+                                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Received</th>
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <tr v-for="item in transfer.items" :key="item.id" class="hover:bg-gray-50">
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                    {{ item.product.name }}
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    {{ item.product.sku }}
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-right">
+                                    {{ item.quantity_requested }}
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-right">
+                                    {{ item.quantity_shipped || '-' }}
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-right">
+                                    {{ item.quantity_received || '-' }}
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-center">
+                                    <span
+                                        :class="['px-2 py-1 text-xs rounded-full', getItemStatusBadge(item.status)]"
+                                    >
+                                        {{ item.status }}
+                                    </span>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
             <!-- Receive Modal -->
-            <div v-if="showReceiveModal" class="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+            <div v-if="showReceiveModal" class="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50" @click.self="showReceiveModal = false">
                 <div class="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
                     <div class="flex justify-between items-center mb-4">
                         <h2 class="text-xl font-bold text-gray-900">Receive Transfer #{{ transfer.transfer_number }}</h2>

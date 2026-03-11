@@ -64,41 +64,21 @@ class ReportController extends Controller implements HasMiddleware
         $movementTypes = $this->getMovementTypesBreakdown($fromDate, $toDate, $user);
 
         // Recent movements
-        $recentMovements = InventoryMovement::with(['product', 'fromStore', 'toStore'])
-            ->whereBetween('created_at', [$fromDate . ' 00:00:00', $toDate . ' 23:59:59'])
-            ->when(!$user->hasRole('Administrator'), function ($query) use ($user) {
-                $accessibleStoreIds = $this->getAccessibleStoreIds($user);
-                $query->where(function ($q) use ($accessibleStoreIds) {
-                    $q->whereIn('from_store_id', $accessibleStoreIds)
-                      ->orWhereIn('to_store_id', $accessibleStoreIds);
-                });
-            })
-            ->latest()
-            ->limit(10)
-            ->get()
-            ->map(function ($movement) {
-                return [
-                    'id' => $movement->id,
-                    'reference' => $movement->reference_number,
-                    'type' => $movement->movement_type,
-                    'product' => $movement->product->name,
-                    'quantity' => $movement->quantity,
-                    'from_store' => $movement->fromStore->name ?? 'N/A',
-                    'to_store' => $movement->toStore->name ?? 'N/A',
-                    'created_at' => $movement->created_at->toDateTimeString(),
-                ];
-            });
+        $recentMovements = $this->getRecentMovements($fromDate, $toDate, $user, 10);
 
         // Store performance
         $storePerformance = $this->getStorePerformance($fromDate, $toDate, $user, 5);
 
         return response()->json([
-            'summary' => $summary,
-            'sales_overview' => $salesOverview,
-            'top_products' => $topProducts,
-            'movement_types' => $movementTypes,
-            'recent_movements' => $recentMovements,
-            'store_performance' => $storePerformance,
+            'success' => true,
+            'data' => [
+                'summary' => $summary,
+                'sales_overview' => $salesOverview,
+                'top_products' => $topProducts,
+                'movement_types' => $movementTypes,
+                'recent_movements' => $recentMovements,
+                'store_performance' => $storePerformance,
+            ],
             'date_range' => [
                 'from' => $fromDate,
                 'to' => $toDate,
@@ -115,16 +95,21 @@ class ReportController extends Controller implements HasMiddleware
         $request->validate([
             'branch_id' => 'nullable|exists:branches,id',
             'store_id' => 'nullable|exists:stores,id',
-            'category' => 'nullable|string'
+            'export' => 'nullable|boolean'
         ]);
+
+        $user = auth()->user();
 
         $query = DB::table('inventories')
             ->join('products', 'inventories.product_id', '=', 'products.id')
             ->join('stores', 'inventories.store_id', '=', 'stores.id')
             ->join('branches', 'stores.branch_id', '=', 'branches.id')
             ->select(
+                'branches.id as branch_id',
                 'branches.name as branch_name',
+                'stores.id as store_id',
                 'stores.name as store_name',
+                'products.id as product_id',
                 'products.sku',
                 'products.name as product_name',
                 'inventories.quantity',
@@ -146,12 +131,7 @@ class ReportController extends Controller implements HasMiddleware
             $query->where('inventories.store_id', $request->store_id);
         }
 
-        if ($request->category) {
-            $query->where('products.category', $request->category);
-        }
-
         // Restrict by user permissions
-        $user = auth()->user();
         if (!$user->hasRole('Administrator')) {
             if ($user->hasRole('Branch Manager')) {
                 $query->where('stores.branch_id', $user->branch_id);
@@ -160,7 +140,14 @@ class ReportController extends Controller implements HasMiddleware
             }
         }
 
-        $results = $query->get();
+        // If export, return all data without pagination
+        if ($request->export) {
+            $results = $query->get();
+            return $this->exportValuationData($results);
+        }
+
+        $perPage = $request->per_page ?? 20;
+        $results = $query->paginate($perPage);
 
         // Calculate totals
         $totals = [
@@ -168,12 +155,12 @@ class ReportController extends Controller implements HasMiddleware
             'total_value' => $results->sum('total_value'),
             'available_value' => $results->sum('available_value'),
             'potential_profit' => $results->sum('total_value') - $results->sum('total_cost'),
-            'total_items' => $results->count(),
+            'total_items' => $results->total(),
             'total_quantity' => $results->sum('quantity'),
         ];
 
         // Group by branch for summary
-        $byBranch = $results->groupBy('branch_name')->map(function ($items) {
+        $byBranch = collect($results->items())->groupBy('branch_name')->map(function ($items) {
             return [
                 'total_value' => $items->sum('total_value'),
                 'total_cost' => $items->sum('total_cost'),
@@ -181,10 +168,18 @@ class ReportController extends Controller implements HasMiddleware
             ];
         });
 
+
         return response()->json([
-            'data' => $results,
+            'success' => true,
+            'data' => $results->items(),
             'totals' => $totals,
             'by_branch' => $byBranch,
+            'pagination' => [
+                'current_page' => $results->currentPage(),
+                'last_page' => $results->lastPage(),
+                'per_page' => $results->perPage(),
+                'total' => $results->total()
+            ],
             'generated_at' => now()->toDateTimeString()
         ]);
     }
@@ -200,8 +195,11 @@ class ReportController extends Controller implements HasMiddleware
             'store_id' => 'nullable|exists:stores,id',
             'product_id' => 'nullable|exists:products,id',
             'movement_type' => 'nullable|in:SALE,TRANSFER,ADJUSTMENT,PROCUREMENT,RETURN,DAMAGE,LOST',
-            'per_page' => 'nullable|integer|min:1|max:100'
+            'per_page' => 'nullable|integer|min:1|max:100',
+            'export' => 'nullable|boolean'
         ]);
+
+        $user = auth()->user();
 
         $query = InventoryMovement::with(['product', 'fromStore', 'toStore', 'creator'])
             ->whereBetween('created_at', [
@@ -225,7 +223,6 @@ class ReportController extends Controller implements HasMiddleware
         }
 
         // Restrict by user permissions
-        $user = auth()->user();
         if (!$user->hasRole('Administrator')) {
             $accessibleStoreIds = $this->getAccessibleStoreIds($user);
             $query->where(function ($q) use ($accessibleStoreIds) {
@@ -234,13 +231,19 @@ class ReportController extends Controller implements HasMiddleware
             });
         }
 
+        // If export, return all data without pagination
+        if ($request->export) {
+            $movements = $query->orderBy('created_at', 'desc')->get();
+            return $this->exportMovementsData($movements);
+        }
+
         $movements = $query->orderBy('created_at', 'desc')
             ->paginate($request->per_page ?? 50);
 
         // Calculate summary statistics
         $summary = [
             'total_movements' => $movements->total(),
-            'total_quantity' => $movements->sum('quantity'),
+            'total_quantity' => abs($movements->sum('quantity')),
             'by_type' => $movements->groupBy('movement_type')
                 ->map(function ($group) {
                     return [
@@ -251,6 +254,7 @@ class ReportController extends Controller implements HasMiddleware
         ];
 
         return response()->json([
+            'success' => true,
             'data' => $movements->items(),
             'summary' => $summary,
             'pagination' => [
@@ -271,10 +275,13 @@ class ReportController extends Controller implements HasMiddleware
             'from_date' => 'required|date',
             'to_date' => 'required|date|after_or_equal:from_date',
             'store_id' => 'nullable|exists:stores,id',
-            'interval' => 'nullable|in:daily,weekly,monthly'
+            'interval' => 'nullable|in:daily,weekly,monthly',
+            'export' => 'nullable|boolean'
         ]);
 
+        $user = auth()->user();
         $interval = $request->interval ?? 'daily';
+        
         $dateFormat = match($interval) {
             'daily' => '%Y-%m-%d',
             'weekly' => '%Y-%u',
@@ -303,7 +310,6 @@ class ReportController extends Controller implements HasMiddleware
         }
 
         // Restrict by user permissions
-        $user = auth()->user();
         if (!$user->hasRole('Administrator')) {
             if ($user->hasRole('Branch Manager')) {
                 $storeIds = Store::where('branch_id', $user->branch_id)->pluck('id');
@@ -325,14 +331,20 @@ class ReportController extends Controller implements HasMiddleware
             'total_discount' => $results->sum('total_discount'),
             'total_profit' => $results->sum('total_profit'),
             'average_sale_value' => $results->sum('total_sales') > 0 
-                ? $results->sum('total_revenue') / $results->sum('total_sales') 
+                ? round($results->sum('total_revenue') / $results->sum('total_sales'), 2) 
                 : 0,
             'average_items_per_sale' => $results->sum('total_sales') > 0
-                ? $results->sum('total_items_sold') / $results->sum('total_sales')
+                ? round($results->sum('total_items_sold') / $results->sum('total_sales'), 2)
                 : 0,
         ];
 
+        // If export, return CSV
+        if ($request->export) {
+            return $this->exportSalesData($results, $totals, $interval);
+        }
+
         return response()->json([
+            'success' => true,
             'interval' => $interval,
             'data' => $results,
             'totals' => $totals,
@@ -349,9 +361,11 @@ class ReportController extends Controller implements HasMiddleware
             'from_date' => 'required|date',
             'to_date' => 'required|date|after_or_equal:from_date',
             'store_id' => 'nullable|exists:stores,id',
-            'limit' => 'nullable|integer|min:1|max:100'
+            'limit' => 'nullable|integer|min:1|max:100',
+            'export' => 'nullable|boolean'
         ]);
 
+        $user = auth()->user();
         $limit = $request->limit ?? 20;
 
         $query = DB::table('sale_items')
@@ -361,7 +375,6 @@ class ReportController extends Controller implements HasMiddleware
                 'products.id',
                 'products.sku',
                 'products.name as product_name',
-                'products.category',
                 DB::raw('SUM(sale_items.quantity) as total_quantity_sold'),
                 DB::raw('COUNT(DISTINCT sales.id) as number_of_sales'),
                 DB::raw('SUM(sale_items.total) as total_revenue'),
@@ -379,7 +392,6 @@ class ReportController extends Controller implements HasMiddleware
         }
 
         // Restrict by user permissions
-        $user = auth()->user();
         if (!$user->hasRole('Administrator')) {
             if ($user->hasRole('Branch Manager')) {
                 $storeIds = Store::where('branch_id', $user->branch_id)->pluck('id');
@@ -389,7 +401,7 @@ class ReportController extends Controller implements HasMiddleware
             }
         }
 
-        $results = $query->groupBy('products.id', 'products.sku', 'products.name', 'products.category')
+        $results = $query->groupBy('products.id', 'products.sku', 'products.name')
             ->orderBy('total_quantity_sold', 'desc')
             ->limit($limit)
             ->get();
@@ -402,8 +414,23 @@ class ReportController extends Controller implements HasMiddleware
             return $item;
         });
 
+        // Calculate totals
+        $totals = [
+            'total_revenue' => $results->sum('total_revenue'),
+            'total_profit' => $results->sum('total_profit'),
+            'total_quantity' => $results->sum('total_quantity_sold'),
+            'average_margin' => round($results->avg('profit_margin'), 2),
+        ];
+
+        // If export, return CSV
+        if ($request->export) {
+            return $this->exportProductsData($results, $totals);
+        }
+
         return response()->json([
+            'success' => true,
             'data' => $results,
+            'totals' => $totals,
             'generated_at' => now()->toDateTimeString()
         ]);
     }
@@ -415,7 +442,9 @@ class ReportController extends Controller implements HasMiddleware
     {
         $request->validate([
             'store_id' => 'nullable|exists:stores,id',
-            'threshold' => 'nullable|integer|min:0'
+            'threshold' => 'nullable|integer|min:0',
+            'per_page' => 'nullable|integer|min:1|max:100',
+            'export' => 'nullable|boolean'
         ]);
 
         $threshold = $request->threshold ?? 0;
@@ -427,6 +456,7 @@ class ReportController extends Controller implements HasMiddleware
             ->select(
                 'stores.id as store_id',
                 'stores.name as store_name',
+                'stores.branch_id',
                 'products.id as product_id',
                 'products.sku',
                 'products.name as product_name',
@@ -434,8 +464,9 @@ class ReportController extends Controller implements HasMiddleware
                 'inventories.reserved_quantity',
                 DB::raw('inventories.quantity - inventories.reserved_quantity as available_quantity'),
                 'inventories.reorder_point',
+                'products.cost_price',
                 'products.selling_price',
-                DB::raw('(inventories.quantity - inventories.reserved_quantity) * products.selling_price as available_value')
+                DB::raw('(inventories.quantity - inventories.reserved_quantity) * products.selling_price as value_at_risk')
             )
             ->whereRaw('inventories.quantity - inventories.reserved_quantity <= GREATEST(inventories.reorder_point, ?)', [$threshold]);
 
@@ -452,10 +483,20 @@ class ReportController extends Controller implements HasMiddleware
             }
         }
 
+        // If export, return all data
+        if ($request->export) {
+            $results = $query->orderBy('available_quantity', 'asc')->get();
+            return $this->exportLowStockData($results);
+        }
+
         $results = $query->orderBy('available_quantity', 'asc')
             ->paginate($request->per_page ?? 50);
 
+        // Calculate total value at risk
+        $totalValueAtRisk = collect($results->items())->sum('value_at_risk');
+
         return response()->json([
+            'success' => true,
             'data' => $results->items(),
             'pagination' => [
                 'current_page' => $results->currentPage(),
@@ -463,53 +504,25 @@ class ReportController extends Controller implements HasMiddleware
                 'per_page' => $results->perPage(),
                 'total' => $results->total()
             ],
-            'total_value_at_risk' => $results->sum('available_value'),
+            'total_value_at_risk' => $totalValueAtRisk,
             'generated_at' => now()->toDateTimeString()
         ]);
     }
 
     /**
-     * Export report as CSV
+     * Get branches for filter
      */
-    public function export(Request $request)
+    public function getBranches()
     {
-        $request->validate([
-            'type' => 'required|in:valuation,movements,sales,products,low-stock',
-            'format' => 'required|in:csv'
+        $branches = DB::table('branches')
+            ->select('id', 'name', 'code')
+            ->orderBy('name')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $branches
         ]);
-
-        // Generate filename
-        $filename = "report_{$request->type}_" . now()->format('Y-m-d_His') . '.csv';
-
-        // Get data based on report type
-        $data = match($request->type) {
-            'valuation' => $this->getValuationData($request),
-            'movements' => $this->getMovementsData($request),
-            'sales' => $this->getSalesData($request),
-            'products' => $this->getProductsData($request),
-            'low-stock' => $this->getLowStockData($request),
-        };
-
-        // Create CSV
-        $handle = fopen('php://temp', 'r+');
-        
-        // Add headers
-        if ($data->isNotEmpty()) {
-            fputcsv($handle, array_keys((array) $data->first()));
-        }
-        
-        // Add data rows
-        foreach ($data as $row) {
-            fputcsv($handle, (array) $row);
-        }
-        
-        rewind($handle);
-        $csv = stream_get_contents($handle);
-        fclose($handle);
-
-        return response($csv)
-            ->header('Content-Type', 'text/csv')
-            ->header('Content-Disposition', "attachment; filename={$filename}");
     }
 
     // ==================== PRIVATE HELPER METHODS ====================
@@ -531,9 +544,10 @@ class ReportController extends Controller implements HasMiddleware
         return [];
     }
 
-    private function getTotalSales($fromDate, $toDate, $user)
+    private function getTotalSales($fromDate, $toDate, $user, $storeId = null)
     {
         return Sale::whereBetween('created_at', [$fromDate . ' 00:00:00', $toDate . ' 23:59:59'])
+            ->when($storeId, fn($q) => $q->where('store_id', $storeId))
             ->when(!$user->hasRole('Administrator'), function ($query) use ($user) {
                 if ($user->hasRole('Branch Manager')) {
                     $storeIds = Store::where('branch_id', $user->branch_id)->pluck('id');
@@ -545,9 +559,15 @@ class ReportController extends Controller implements HasMiddleware
             ->count();
     }
 
-    private function getTotalMovements($fromDate, $toDate, $user)
+    private function getTotalMovements($fromDate, $toDate, $user, $storeId = null)
     {
         return InventoryMovement::whereBetween('created_at', [$fromDate . ' 00:00:00', $toDate . ' 23:59:59'])
+            ->when($storeId, function ($query) use ($storeId) {
+                $query->where(function ($q) use ($storeId) {
+                    $q->where('from_store_id', $storeId)
+                      ->orWhere('to_store_id', $storeId);
+                });
+            })
             ->when(!$user->hasRole('Administrator'), function ($query) use ($user) {
                 $accessibleStoreIds = $this->getAccessibleStoreIds($user);
                 $query->where(function ($q) use ($accessibleStoreIds) {
@@ -558,11 +578,12 @@ class ReportController extends Controller implements HasMiddleware
             ->count();
     }
 
-    private function getLowStockCount($user)
+    private function getLowStockCount($user, $storeId = null)
     {
         return DB::table('inventories')
             ->join('stores', 'inventories.store_id', '=', 'stores.id')
             ->whereRaw('inventories.quantity - inventories.reserved_quantity <= inventories.reorder_point')
+            ->when($storeId, fn($q) => $q->where('inventories.store_id', $storeId))
             ->when(!$user->hasRole('Administrator'), function ($query) use ($user) {
                 if ($user->hasRole('Branch Manager')) {
                     $query->where('stores.branch_id', $user->branch_id);
@@ -573,11 +594,12 @@ class ReportController extends Controller implements HasMiddleware
             ->count();
     }
 
-    private function getInventoryValue($user)
+    private function getInventoryValue($user, $storeId = null)
     {
         return DB::table('inventories')
             ->join('products', 'inventories.product_id', '=', 'products.id')
             ->join('stores', 'inventories.store_id', '=', 'stores.id')
+            ->when($storeId, fn($q) => $q->where('inventories.store_id', $storeId))
             ->when(!$user->hasRole('Administrator'), function ($query) use ($user) {
                 if ($user->hasRole('Branch Manager')) {
                     $query->where('stores.branch_id', $user->branch_id);
@@ -588,7 +610,7 @@ class ReportController extends Controller implements HasMiddleware
             ->sum(DB::raw('inventories.quantity * products.selling_price'));
     }
 
-    private function getSalesOverview($fromDate, $toDate, $user)
+    private function getSalesOverview($fromDate, $toDate, $user, $storeId = null)
     {
         $query = DB::table('sales')
             ->select(
@@ -598,6 +620,10 @@ class ReportController extends Controller implements HasMiddleware
             )
             ->whereBetween('created_at', [$fromDate . ' 00:00:00', $toDate . ' 23:59:59'])
             ->groupBy(DB::raw('DATE(created_at)'));
+
+        if ($storeId) {
+            $query->where('store_id', $storeId);
+        }
 
         if (!$user->hasRole('Administrator')) {
             if ($user->hasRole('Branch Manager')) {
@@ -611,7 +637,7 @@ class ReportController extends Controller implements HasMiddleware
         return $query->orderBy('date')->get();
     }
 
-    private function getTopProducts($fromDate, $toDate, $user, $limit)
+    private function getTopProducts($fromDate, $toDate, $user, $limit, $storeId = null)
     {
         $query = DB::table('sale_items')
             ->join('products', 'sale_items.product_id', '=', 'products.id')
@@ -625,6 +651,10 @@ class ReportController extends Controller implements HasMiddleware
             )
             ->whereBetween('sales.created_at', [$fromDate . ' 00:00:00', $toDate . ' 23:59:59'])
             ->groupBy('products.id', 'products.name', 'products.sku');
+
+        if ($storeId) {
+            $query->where('sales.store_id', $storeId);
+        }
 
         if (!$user->hasRole('Administrator')) {
             if ($user->hasRole('Branch Manager')) {
@@ -640,7 +670,7 @@ class ReportController extends Controller implements HasMiddleware
             ->get();
     }
 
-    private function getMovementTypesBreakdown($fromDate, $toDate, $user)
+    private function getMovementTypesBreakdown($fromDate, $toDate, $user, $storeId = null)
     {
         $query = InventoryMovement::select(
                 'movement_type',
@@ -649,6 +679,13 @@ class ReportController extends Controller implements HasMiddleware
             )
             ->whereBetween('created_at', [$fromDate . ' 00:00:00', $toDate . ' 23:59:59'])
             ->groupBy('movement_type');
+
+        if ($storeId) {
+            $query->where(function ($q) use ($storeId) {
+                $q->where('from_store_id', $storeId)
+                  ->orWhere('to_store_id', $storeId);
+            });
+        }
 
         if (!$user->hasRole('Administrator')) {
             $accessibleStoreIds = $this->getAccessibleStoreIds($user);
@@ -661,7 +698,45 @@ class ReportController extends Controller implements HasMiddleware
         return $query->get();
     }
 
-    private function getStorePerformance($fromDate, $toDate, $user, $limit)
+    private function getRecentMovements($fromDate, $toDate, $user, $limit = 10, $storeId = null)
+    {
+        $query = InventoryMovement::with(['product', 'fromStore', 'toStore', 'creator'])
+            ->whereBetween('created_at', [$fromDate . ' 00:00:00', $toDate . ' 23:59:59']);
+
+        if ($storeId) {
+            $query->where(function ($q) use ($storeId) {
+                $q->where('from_store_id', $storeId)
+                  ->orWhere('to_store_id', $storeId);
+            });
+        }
+
+        if (!$user->hasRole('Administrator')) {
+            $accessibleStoreIds = $this->getAccessibleStoreIds($user);
+            $query->where(function ($q) use ($accessibleStoreIds) {
+                $q->whereIn('from_store_id', $accessibleStoreIds)
+                  ->orWhereIn('to_store_id', $accessibleStoreIds);
+            });
+        }
+
+        return $query->latest()
+            ->limit($limit)
+            ->get()
+            ->map(function ($movement) {
+                return [
+                    'id' => $movement->id,
+                    'reference' => $movement->reference_number,
+                    'type' => $movement->movement_type,
+                    'product' => $movement->product->name,
+                    'quantity' => $movement->quantity,
+                    'from_store' => $movement->fromStore->name ?? 'N/A',
+                    'to_store' => $movement->toStore->name ?? 'N/A',
+                    'created_at' => $movement->created_at->toDateTimeString(),
+                    'created_by' => $movement->creator->name ?? 'System',
+                ];
+            });
+    }
+
+    private function getStorePerformance($fromDate, $toDate, $user, $limit, $storeId = null)
     {
         $query = DB::table('sales')
             ->join('stores', 'sales.store_id', '=', 'stores.id')
@@ -670,11 +745,15 @@ class ReportController extends Controller implements HasMiddleware
                 'stores.name',
                 'stores.code',
                 DB::raw('COUNT(*) as total_sales'),
-                DB::raw('SUM(grand_total) as total_revenue'),
-                DB::raw('AVG(grand_total) as average_sale_value')
+                DB::raw('SUM(sales.grand_total) as total_revenue'),
+                DB::raw('AVG(sales.grand_total) as average_sale_value')
             )
             ->whereBetween('sales.created_at', [$fromDate . ' 00:00:00', $toDate . ' 23:59:59'])
             ->groupBy('stores.id', 'stores.name', 'stores.code');
+
+        if ($storeId) {
+            $query->where('sales.store_id', $storeId);
+        }
 
         if (!$user->hasRole('Administrator')) {
             if ($user->hasRole('Branch Manager')) {
@@ -689,111 +768,218 @@ class ReportController extends Controller implements HasMiddleware
             ->get();
     }
 
-    private function getValuationData($request)
+    // ==================== EXPORT METHODS ====================
+
+    private function exportValuationData($data)
     {
-        return DB::table('inventories')
-            ->join('products', 'inventories.product_id', '=', 'products.id')
-            ->join('stores', 'inventories.store_id', '=', 'stores.id')
-            ->select(
-                'stores.name as store',
-                'products.sku',
-                'products.name as product',
-                'inventories.quantity',
-                'inventories.reserved_quantity',
-                DB::raw('inventories.quantity - inventories.reserved_quantity as available'),
-                'products.cost_price',
-                'products.selling_price',
-                DB::raw('inventories.quantity * products.cost_price as total_cost'),
-                DB::raw('inventories.quantity * products.selling_price as total_value')
-            )
-            ->get();
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => 'attachment; filename="stock_valuation_' . now()->format('Y-m-d_His') . '.csv"',
+        ];
+
+        $callback = function () use ($data) {
+            $file = fopen('php://output', 'w');
+            
+            // Add headers
+            fputcsv($file, [
+                'Branch', 'Store', 'SKU', 'Product', 
+                'Quantity', 'Reserved', 'Available',
+                'Cost Price', 'Selling Price', 'Total Cost', 'Total Value', 'Available Value'
+            ]);
+            
+            // Add rows
+            foreach ($data as $row) {
+                fputcsv($file, [
+                    $row->branch_name,
+                    $row->store_name,
+                    $row->sku,
+                    $row->product_name,
+                    $row->quantity,
+                    $row->reserved_quantity,
+                    $row->available_quantity,
+                    $row->cost_price,
+                    $row->selling_price,
+                    $row->total_cost,
+                    $row->total_value,
+                    $row->available_value,
+                ]);
+            }
+            
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
     }
 
-    private function getMovementsData($request)
+    private function exportMovementsData($data)
     {
-        return InventoryMovement::with(['product', 'fromStore', 'toStore'])
-            ->latest()
-            ->limit(1000)
-            ->get()
-            ->map(function ($movement) {
-                return [
-                    'date' => $movement->created_at->toDateTimeString(),
-                    'reference' => $movement->reference_number,
-                    'type' => $movement->movement_type,
-                    'product' => $movement->product->name,
-                    'sku' => $movement->product->sku,
-                    'quantity' => $movement->quantity,
-                    'from_store' => $movement->fromStore->name ?? 'N/A',
-                    'to_store' => $movement->toStore->name ?? 'N/A',
-                    'created_by' => $movement->creator->name ?? 'System',
-                ];
-            });
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => 'attachment; filename="movement_history_' . now()->format('Y-m-d_His') . '.csv"',
+        ];
+
+        $callback = function () use ($data) {
+            $file = fopen('php://output', 'w');
+            
+            // Add headers
+            fputcsv($file, [
+                'Date', 'Reference', 'Type', 'Product', 'SKU',
+                'Quantity', 'From Store', 'To Store', 'Created By'
+            ]);
+            
+            // Add rows
+            foreach ($data as $movement) {
+                fputcsv($file, [
+                    $movement->created_at->toDateTimeString(),
+                    $movement->reference_number,
+                    $movement->movement_type,
+                    $movement->product->name,
+                    $movement->product->sku,
+                    $movement->quantity,
+                    $movement->fromStore->name ?? 'N/A',
+                    $movement->toStore->name ?? 'N/A',
+                    $movement->creator->name ?? 'System',
+                ]);
+            }
+            
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
     }
 
-    private function getSalesData($request)
+    private function exportSalesData($data, $totals, $interval)
     {
-        return DB::table('sales')
-            ->join('stores', 'sales.store_id', '=', 'stores.id')
-            ->join('users', 'sales.created_by', '=', 'users.id')
-            ->select(
-                'sales.sale_number',
-                'stores.name as store',
-                'sales.created_at as date',
-                'sales.grand_total as amount',
-                'sales.payment_status',
-                'sales.status',
-                'users.name as cashier'
-            )
-            ->orderBy('sales.created_at', 'desc')
-            ->limit(1000)
-            ->get();
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => 'attachment; filename="sales_report_' . now()->format('Y-m-d_His') . '.csv"',
+        ];
+
+        $callback = function () use ($data, $totals, $interval) {
+            $file = fopen('php://output', 'w');
+            
+            // Add headers
+            fputcsv($file, [
+                'Period', 'Total Sales', 'Items Sold', 'Revenue', 'Discount', 'Profit'
+            ]);
+            
+            // Add rows
+            foreach ($data as $row) {
+                fputcsv($file, [
+                    $row->period,
+                    $row->total_sales,
+                    $row->total_items_sold,
+                    $row->total_revenue,
+                    $row->total_discount,
+                    $row->total_profit,
+                ]);
+            }
+            
+            // Add totals row
+            fputcsv($file, []);
+            fputcsv($file, [
+                'TOTALS',
+                $totals['total_sales'],
+                $totals['total_items_sold'],
+                $totals['total_revenue'],
+                $totals['total_discount'],
+                $totals['total_profit'],
+            ]);
+            
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
     }
 
-    private function getProductsData($request)
+    private function exportProductsData($data, $totals)
     {
-        return DB::table('products')
-            ->select(
-                'sku',
-                'name',
-                'category',
-                'selling_price as price',
-                'cost_price as cost',
-                DB::raw('selling_price - cost_price as profit_margin'),
-                DB::raw('ROUND(((selling_price - cost_price) / selling_price) * 100, 2) as margin_percentage'),
-                'unit',
-                'reorder_level',
-                'is_active'
-            )
-            ->where('is_active', true)
-            ->get();
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => 'attachment; filename="product_performance_' . now()->format('Y-m-d_His') . '.csv"',
+        ];
+
+        $callback = function () use ($data, $totals) {
+            $file = fopen('php://output', 'w');
+            
+            // Add headers
+            fputcsv($file, [
+                'SKU', 'Product', 'Quantity Sold', 'Number of Sales',
+                'Revenue', 'Cost', 'Profit', 'Margin %', 'Avg Qty per Sale'
+            ]);
+            
+            // Add rows
+            foreach ($data as $row) {
+                fputcsv($file, [
+                    $row->sku,
+                    $row->product_name,
+                    $row->total_quantity_sold,
+                    $row->number_of_sales,
+                    $row->total_revenue,
+                    $row->total_cost,
+                    $row->total_profit,
+                    $row->profit_margin,
+                    round($row->average_quantity_per_sale, 2),
+                ]);
+            }
+            
+            // Add totals row
+            fputcsv($file, []);
+            fputcsv($file, [
+                'TOTALS',
+                '',
+                '',
+                $totals['total_quantity'],
+                '',
+                $totals['total_revenue'],
+                '',
+                $totals['total_profit'],
+                $totals['average_margin'] . '%',
+                '',
+            ]);
+            
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
     }
 
-    private function getLowStockData($request)
+    private function exportLowStockData($data)
     {
-        $user = auth()->user();
-        
-        return DB::table('inventories')
-            ->join('products', 'inventories.product_id', '=', 'products.id')
-            ->join('stores', 'inventories.store_id', '=', 'stores.id')
-            ->select(
-                'stores.name as store',
-                'products.sku',
-                'products.name as product',
-                'inventories.quantity',
-                'inventories.reserved_quantity',
-                DB::raw('inventories.quantity - inventories.reserved_quantity as available'),
-                'inventories.reorder_point',
-                DB::raw('(inventories.quantity - inventories.reserved_quantity) * products.selling_price as value_at_risk')
-            )
-            ->whereRaw('inventories.quantity - inventories.reserved_quantity <= inventories.reorder_point')
-            ->when(!$user->hasRole('Administrator'), function ($query) use ($user) {
-                if ($user->hasRole('Branch Manager')) {
-                    $query->where('stores.branch_id', $user->branch_id);
-                } elseif ($user->hasRole('Store Manager')) {
-                    $query->where('inventories.store_id', $user->store_id);
-                }
-            })
-            ->orderBy('available', 'asc')
-            ->get();
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => 'attachment; filename="low_stock_' . now()->format('Y-m-d_His') . '.csv"',
+        ];
+
+        $callback = function () use ($data) {
+            $file = fopen('php://output', 'w');
+            
+            // Add headers
+            fputcsv($file, [
+                'Store', 'SKU', 'Product',
+                'On Hand', 'Reserved', 'Available',
+                'Reorder Point', 'Cost Price', 'Selling Price', 'Value at Risk'
+            ]);
+            
+            // Add rows
+            foreach ($data as $row) {
+                fputcsv($file, [
+                    $row->store_name,
+                    $row->sku,
+                    $row->product_name,
+                    $row->quantity,
+                    $row->reserved_quantity,
+                    $row->available_quantity,
+                    $row->reorder_point,
+                    $row->cost_price,
+                    $row->selling_price,
+                    $row->value_at_risk,
+                ]);
+            }
+            
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
     }
 }
