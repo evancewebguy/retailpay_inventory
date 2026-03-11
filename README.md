@@ -200,7 +200,7 @@ Navigate to http://localhost:8000/login and use the credentials above.
 
 
 ### 12. Project Structure
-
+```
 kk-wholesalers-inventory/
 ├── app/
 │   ├── Http/
@@ -326,7 +326,7 @@ kk-wholesalers-inventory/
 ├── tailwind.config.js                             # Tailwind configuration
 ├── tsconfig.json                                  # TypeScript configuration
 └── vite.config.js                                 # Vite configuration
-
+```
 ### 13. Some of the Endpoints
 Endpoint	Method	Description
 /api/login	POST	Authenticate user
