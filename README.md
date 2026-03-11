@@ -110,8 +110,9 @@ CREATE DATABASE kk_wholesalers CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ### 7. Run Database Migrations
 bash
 php artisan migrate
-This creates all the necessary tables:
 
+This creates all the necessary tables:
+```
 Table	Purpose
 **users**	System users
 **roles**	User roles (Administrator, Branch Manager, Store Manager)
@@ -127,7 +128,7 @@ Table	Purpose
 **stock_adjustments**	Manual inventory adjustments
 **adjustment_items**	Items in each adjustment
 **inventory_movements**	Complete audit trail of all stock movements
-
+```
 
 ### 8. Seed the Database with Sample Data
 # bash
@@ -141,6 +142,7 @@ Branch A	Store A1 - Downtown
 Branch B	Store B1 - North, Store B2 - South
 
 # User Accounts with Different Roles
+```
 Role	Email	Password	Access Level
 Administrator	admin@kk.com	password	Full system access
 
@@ -150,12 +152,14 @@ Branch Manager B	manager.b@kk.com	password	Manage Branch B stores
 Store Manager A1	store.a1@kk.com	password	Manage Store A1 only
 Store Manager B1	store.b1@kk.com	password	Manage Store B1 only
 Store Manager B2	store.b2@kk.com	password	Manage Store B2 only
-
+```
 # Sample Products
+```
 SKU	Name	Selling Price
 SKU0001	Product 1	$39.00 - $150.00
 SKU0002	Product 2	$39.00 - $150.00
 SKU0003	Product 3	$39.00 - $150.00
+```
 ...	...	...
 *10 products with randomized prices between $20-150*
 
@@ -328,6 +332,8 @@ kk-wholesalers-inventory/
 └── vite.config.js                                 # Vite configuration
 ```
 ### 13. Some of the Endpoints
+
+```
 Endpoint	Method	Description
 /api/login	POST	Authenticate user
 /api/sales	GET/POST	List/create sales
@@ -339,7 +345,7 @@ Endpoint	Method	Description
 /api/inventory/adjustments	POST	Create stock adjustment
 /api/reports/*	GET	Access various reports
 All API endpoints require authentication via Bearer token.
-
+```
 
 ### 14. Support
 For support, email support@kkwholesalers.com or create an issue in the repository.
